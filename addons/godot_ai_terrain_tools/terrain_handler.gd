@@ -14,8 +14,18 @@ const PARAM_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
 	"height_scale", "base_height", "generate_collision",
 ]
-const CREATE_KEYS := PARAM_KEYS + ["parent_path", "scene_file", "name", "session_id"]
-const REGENERATE_KEYS := PARAM_KEYS + ["path", "scene_file", "session_id"]
+## Keep these literal for Godot 4.5, which does not accept Array addition in a
+## constant expression.
+const CREATE_KEYS := [
+	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
+	"height_scale", "base_height", "generate_collision",
+	"parent_path", "scene_file", "name", "session_id",
+]
+const REGENERATE_KEYS := [
+	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
+	"height_scale", "base_height", "generate_collision",
+	"path", "scene_file", "session_id",
+]
 const NOISE_TYPES := ["simplex", "simplex_smooth", "perlin", "ridged", "value"]
 
 var _busy := false

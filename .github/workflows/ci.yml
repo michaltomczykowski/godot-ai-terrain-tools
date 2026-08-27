@@ -128,9 +128,13 @@ jobs:
         run: tail -n 500 godot-editor.log || true
 
   plugin-smoke:
-    name: Plugin-enabled live smoke / 4.7.0
+    name: Plugin-enabled live smoke / ${{ matrix.godot-version }}
     needs: godot-tests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        godot-version: ["4.5.0", "4.7.0"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -144,7 +148,7 @@ jobs:
 
       - uses: chickensoft-games/setup-godot@f166999204a4f2722c6fe042fbaa3b3ea0d9c789 # v2
         with:
-          version: "4.7.0"
+          version: ${{ matrix.godot-version }}
           use-dotnet: false
 
       - name: Install Godot AI and overlay its addon
