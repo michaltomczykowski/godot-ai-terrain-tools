@@ -9,10 +9,9 @@ included inside the packaged directory.
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import tempfile
 import zipfile
-
+from pathlib import Path
 
 ADDON_ROOT = Path("addons") / "godot_ai_terrain_tools"
 

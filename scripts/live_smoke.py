@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import time
 from contextlib import suppress
 from pathlib import Path
-import time
 
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -21,12 +21,14 @@ async def connect_client(server_url: str, timeout: float) -> Client:
         try:
             await client.__aenter__()
             return client
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - transport startup failures vary
             last_error = error
             with suppress(Exception):
                 await client.__aexit__(type(error), error, error.__traceback__)
             await asyncio.sleep(1)
-    raise RuntimeError(f"Godot AI server at {server_url} did not become ready") from last_error
+    raise RuntimeError(
+        f"Godot AI server at {server_url} did not become ready"
+    ) from last_error
 
 
 async def wait_for_session(client: Client, project_root: Path, timeout: float) -> str:
@@ -43,7 +45,13 @@ async def wait_for_session(client: Client, project_root: Path, timeout: float) -
 
 
 async def wait_for_promoted_tools(client: Client, timeout: float) -> None:
-    expected = {"custom_terrain_create", "custom_terrain_regenerate"}
+    expected = {
+        "custom_terrain_create",
+        "custom_terrain_regenerate",
+        "custom_terrain_sculpt",
+        "custom_terrain_holes",
+        "custom_terrain_erode",
+    }
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         names = {tool.name for tool in await client.list_tools()}
@@ -51,6 +59,146 @@ async def wait_for_promoted_tools(client: Client, timeout: float) -> None:
             return
         await asyncio.sleep(0.5)
     raise RuntimeError("promoted terrain tools were not exposed by tools/list")
+
+
+def _schema_dict(value):
+    """Return a fastmcp/Pydantic schema as a plain dictionary."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump()
+    return {}
+
+
+def _schema_value(name: str, schema: dict):
+    if "default" in schema:
+        return schema["default"]
+    enum = schema.get("enum")
+    if enum:
+        return enum[0]
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        properties = schema.get("properties", {})
+        return {
+            child_name: _schema_value(child_name, child_schema)
+            for child_name, child_schema in properties.items()
+            if child_name in schema.get("required", [])
+        }
+    if schema_type == "array":
+        item_schema = schema.get("items", {})
+        return [_schema_value("item", item_schema)] if item_schema else []
+    if schema_type == "integer":
+        return 1
+    if schema_type == "number":
+        return 1.0
+    if schema_type == "boolean":
+        return False
+    return ""
+
+
+def _tool_schema(tool) -> dict:
+    # fastmcp has used both inputSchema and parameters on Tool across releases.
+    return _schema_dict(
+        getattr(tool, "inputSchema", None)
+        or getattr(tool, "input_schema", None)
+        or getattr(tool, "parameters", None)
+    )
+
+
+def _operation_args(tool, path: str, mode: str) -> dict:
+    """Build a valid small brush request from the published JSON schema.
+
+    Terrain brush argument names intentionally stay schema-driven here.  This
+    keeps the smoke useful across the addon versions that used ``center`` vs
+    ``position`` while still exercising the real promoted contract.
+    """
+    schema = _tool_schema(tool)
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    args = {
+        name: _schema_value(name, prop)
+        for name, prop in properties.items()
+        if name in required
+    }
+
+    for name in ("path", "terrain_path"):
+        if name in properties:
+            args[name] = path
+    for name in ("mode", "operation", "kind", "algorithm"):
+        if name in properties:
+            prop = properties[name]
+            values = prop.get("enum", [])
+            if values:
+                preferred = next(
+                    (value for value in values if value == mode), values[0]
+                )
+                args[name] = preferred
+    for name in ("radius", "brush_radius"):
+        if name in properties:
+            args[name] = 3.0
+    for name in ("strength", "amount", "delta"):
+        if name in properties:
+            args[name] = 0.35
+    for name in ("iterations", "steps"):
+        if name in properties:
+            args[name] = 2
+    for name in ("seed",):
+        if name in properties:
+            args[name] = 101
+
+    if "strokes" in properties and args.get("strokes"):
+        stroke = args["strokes"][0]
+        stroke.update(
+            {"center_x": 0.0, "center_z": 0.0, "radius": 3.0, "strength": 0.35}
+        )
+        stroke_schema = properties["strokes"].get("items", {})
+        mode_values = (
+            stroke_schema.get("properties", {}).get("mode", {}).get("enum", [])
+        )
+        if mode_values:
+            stroke["mode"] = mode if mode in mode_values else mode_values[0]
+    if "areas" in properties and args.get("areas"):
+        area = args["areas"][0]
+        area.update({"center_x": 0.0, "center_z": 0.0, "radius": 3.0})
+        area_schema = properties["areas"].get("items", {})
+        mode_values = area_schema.get("properties", {}).get("mode", {}).get("enum", [])
+        if mode_values:
+            area["mode"] = mode if mode in mode_values else mode_values[0]
+
+    for name in ("center", "position", "origin", "point"):
+        if name not in properties:
+            continue
+        prop = properties[name]
+        if prop.get("type") == "array":
+            args[name] = [8.0, 8.0]
+        elif prop.get("type") == "object":
+            args[name] = {
+                child_name: 8.0
+                for child_name, child_schema in prop.get("properties", {}).items()
+                if child_schema.get("type") in ("integer", "number")
+            }
+        else:
+            args[name] = 8.0
+    return args
+
+
+def _schema_enum(tool, property_name: str):
+    schema = _tool_schema(tool)
+    prop = schema.get("properties", {}).get(property_name, {})
+    enum = prop.get("enum", [])
+    return enum[0] if enum else None
+
+
+async def invoke_promoted_edit(client: Client, tool, path: str, mode: str) -> dict:
+    args = _operation_args(tool, path, mode)
+    result = await client.call_tool(tool.name, args)
+    data = result.structured_content or {}
+    if data.get("status") == "error" or data.get("error"):
+        raise AssertionError(f"{tool.name} rejected smoke request: {data}")
+    return data
 
 
 async def invoke_busy(server_url: str, session_id: str, name: str):
@@ -75,31 +223,135 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
     try:
         session_id = await wait_for_session(client, project_root, timeout)
         await wait_for_promoted_tools(client, timeout)
+        promoted = {
+            tool.name: tool
+            for tool in await client.list_tools()
+            if tool.name.startswith("custom_terrain_")
+        }
+        assert {
+            "custom_terrain_create",
+            "custom_terrain_regenerate",
+            "custom_terrain_sculpt",
+            "custom_terrain_holes",
+            "custom_terrain_erode",
+        } <= promoted.keys(), promoted.keys()
 
         tests = await client.call_tool(
             "test_run",
             {"suite": "terrain_tools", "session_id": session_id},
         )
         summary = tests.structured_content or {}
-        assert summary.get("total") == 21, summary
-        assert summary.get("passed") == 21 and summary.get("failed") == 0, summary
+        suite_total = int(summary.get("total", 0))
+        assert suite_total >= 21, summary
+        assert summary.get("passed") == suite_total and summary.get("failed") == 0, (
+            summary
+        )
+
+        create_args = {
+            "name": "CITerrain",
+            "size": 16,
+            "cell_size": 1.25,
+            "seed": 41,
+            "generate_collision": True,
+            "session_id": session_id,
+        }
+        material_preset = _schema_enum(
+            promoted["custom_terrain_create"], "material_preset"
+        )
+        if material_preset is not None:
+            create_args["material_preset"] = material_preset
 
         created = await client.call_tool(
             "custom_terrain_create",
-            {
-                "name": "CITerrain",
-                "size": 16,
-                "cell_size": 1.25,
-                "seed": 41,
-                "generate_collision": True,
-                "session_id": session_id,
-            },
+            create_args,
         )
         create_data = created.structured_content or {}
         assert create_data.get("path") == "/TerrainDemo/CITerrain", create_data
         assert create_data.get("vertices") == 256, create_data
         assert create_data.get("triangles") == 450, create_data
         assert create_data.get("undoable") is True, create_data
+
+        operation_results = {}
+        for tool_name, mode in (
+            ("custom_terrain_sculpt", "raise"),
+            ("custom_terrain_holes", "cut"),
+            ("custom_terrain_erode", "thermal"),
+            ("custom_terrain_erode", "hydraulic"),
+        ):
+            args = _operation_args(promoted[tool_name], "/TerrainDemo/CITerrain", mode)
+            if tool_name == "custom_terrain_sculpt":
+                args["strokes"] = [
+                    {
+                        "center_x": 0.0,
+                        "center_z": 0.0,
+                        "radius": 3.0,
+                        "mode": "raise",
+                        "strength": 0.35,
+                    },
+                    {
+                        "center_x": -9.0,
+                        "center_z": -9.0,
+                        "radius": 3.0,
+                        "mode": "lower",
+                        "strength": 0.2,
+                        "falloff": "linear",
+                    },
+                    {
+                        "center_x": 1.0,
+                        "center_z": 1.0,
+                        "radius": 2.5,
+                        "mode": "smooth",
+                        "strength": 0.4,
+                    },
+                    {
+                        "center_x": 3.0,
+                        "center_z": -2.0,
+                        "radius": 2.0,
+                        "mode": "flatten",
+                        "strength": 0.5,
+                        "target_height": 1.0,
+                    },
+                    {
+                        "center_x": -2.0,
+                        "center_z": 3.0,
+                        "radius": 2.0,
+                        "mode": "noise",
+                        "strength": 0.25,
+                        "seed": 17,
+                    },
+                ]
+            args["session_id"] = session_id
+            result = await client.call_tool(tool_name, args)
+            result_data = result.structured_content or {}
+            assert result_data.get("status") != "error", result_data
+            assert not result_data.get("error"), result_data
+            operation_results[mode] = result_data
+        assert operation_results["raise"].get("affected_vertices", 0) > 0
+        assert operation_results["cut"].get("hole_vertices", 0) > 0
+        assert operation_results["thermal"].get("affected_vertices", 0) > 0
+        assert operation_results["hydraulic"].get("affected_vertices", 0) > 0
+
+        fill_args = _operation_args(
+            promoted["custom_terrain_holes"], "/TerrainDemo/CITerrain", "fill"
+        )
+        fill_args["session_id"] = session_id
+        filled = await client.call_tool("custom_terrain_holes", fill_args)
+        fill_data = filled.structured_content or {}
+        assert fill_data.get("hole_vertices") == 0, fill_data
+
+        try:
+            await client.call_tool(
+                "custom_terrain_regenerate",
+                {
+                    "path": "/TerrainDemo/CITerrain",
+                    "size": 20,
+                    "session_id": session_id,
+                },
+            )
+        except ToolError as error:
+            assert "terrain_tools.MODIFICATIONS_EXIST" in str(error), error
+        else:
+            raise AssertionError("size change did not require reset_modifications")
 
         collision_shape = await client.call_tool(
             "node_get_properties",
@@ -108,25 +360,47 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
                 "session_id": session_id,
             },
         )
-        assert (collision_shape.structured_content or {}).get("node_type") == "CollisionShape3D"
+        assert (collision_shape.structured_content or {}).get(
+            "node_type"
+        ) == "CollisionShape3D"
 
+        material_values = (
+            _tool_schema(promoted["custom_terrain_regenerate"])
+            .get("properties", {})
+            .get("material_preset", {})
+            .get("enum", [])
+        )
+        replacement_material = (
+            material_values[1] if len(material_values) > 1 else "desert"
+        )
         regenerated = await client.call_tool(
             "custom_terrain_regenerate",
             {
                 "path": "/TerrainDemo/CITerrain",
                 "seed": 99,
+                "size": 20,
                 "generate_collision": False,
+                "material_preset": replacement_material,
+                "reset_modifications": True,
                 "session_id": session_id,
             },
         )
         regenerate_data = regenerated.structured_content or {}
         effective = regenerate_data.get("params", {})
-        assert effective.get("size") == 16 and effective.get("cell_size") == 1.25, regenerate_data
-        assert effective.get("seed") == 99 and effective.get("generate_collision") is False, regenerate_data
+        assert effective.get("size") == 20 and effective.get("cell_size") == 1.25, (
+            regenerate_data
+        )
+        assert (
+            effective.get("seed") == 99 and effective.get("generate_collision") is False
+        ), regenerate_data
+        assert effective.get("material_preset") == replacement_material, regenerate_data
         try:
             await client.call_tool(
                 "node_get_properties",
-                {"path": "/TerrainDemo/CITerrain/TerrainCollision", "session_id": session_id},
+                {
+                    "path": "/TerrainDemo/CITerrain/TerrainCollision",
+                    "session_id": session_id,
+                },
             )
         except ToolError as error:
             assert "NODE_NOT_FOUND" in str(error), error
@@ -143,8 +417,13 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
     failures = [value for status, value in busy_results if status == "error"]
     assert len(successes) == 1, busy_results
     assert len(failures) == 1, busy_results
-    assert "terrain_tools.BUSY" in failures[0] and "retryable=True" in failures[0], failures[0]
-    print("Live smoke passed: 21 tests, promoted create/regenerate, collision, persistence, BUSY")
+    assert "terrain_tools.BUSY" in failures[0] and "retryable=True" in failures[0], (
+        failures[0]
+    )
+    print(
+        f"Live smoke passed: {suite_total} tests, promoted create/regenerate/sculpt/holes/erode, "
+        "collision, persistence, thermal/hydraulic erosion, BUSY"
+    )
 
 
 def main() -> None:

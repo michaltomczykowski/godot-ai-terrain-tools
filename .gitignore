@@ -28,4 +28,4 @@ Thumbs.db
 # Installed separately for local/demo testing; releases contain only this
 # repository's terrain addon.
 /addons/godot_ai/
-/.tmp-appdata/
+/.tmp-appdata*/
