@@ -1,0 +1,31 @@
+# Godot editor and import state
+.godot/
+.import/
+*.import
+
+# Export and release output
+.export/
+dist/
+*.zip
+*.zip.sha256
+
+# Local tooling and test artifacts
+.ci/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+*.log
+
+# Operating-system/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Installed separately for local/demo testing; releases contain only this
+# repository's terrain addon.
+/addons/godot_ai/
+/.tmp-appdata/

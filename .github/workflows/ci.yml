@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GODOT_AI_DISABLE_TELEMETRY: "true"
+
+jobs:
+  package:
+    name: Validate addon package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build addon-only archive
+        run: python3 scripts/package_release.py --output dist/godot-ai-terrain-tools.zip
+      - name: Check archive contents
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          archive_path = Path("dist/godot-ai-terrain-tools.zip")
+          prefix = "addons/godot_ai_terrain_tools/"
+          with zipfile.ZipFile(archive_path) as archive:
+              names = archive.namelist()
+          assert names, "release archive is empty"
+          assert all(name.startswith(prefix) for name in names)
+          assert f"{prefix}plugin.cfg" in names
+          print(f"Validated {len(names)} archive entries")
+          PY
+
+  godot-tests:
+    name: Godot tests / ${{ matrix.godot-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 4.5 is the advertised compatibility floor. 4.7 is the primary
+        # version used by the pinned v3.2.2 upstream harness.
+        godot-version: ["4.5.0", "4.7.0"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout Godot AI v3.2.2 test harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hi-godot/godot-ai
+          ref: v3.2.2
+          path: .ci/godot-ai
+          persist-credentials: false
+
+      - uses: chickensoft-games/setup-godot@f166999204a4f2722c6fe042fbaa3b3ea0d9c789 # v2
+        with:
+          version: ${{ matrix.godot-version }}
+          use-dotnet: false
+
+      - name: Overlay addon and tests into upstream harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .ci/godot-ai/script/verify-worktree
+          cp -R addons/godot_ai_terrain_tools .ci/godot-ai/test_project/addons/
+          if compgen -G 'tests/test_*.gd' > /dev/null; then
+            cp tests/test_*.gd .ci/godot-ai/test_project/tests/
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          project = Path(".ci/godot-ai/test_project/project.godot")
+          text = project.read_text()
+          # Keep third-party plugins disabled for the upstream full-suite run.
+          # An upstream dispatcher test intentionally asserts Godot AI's exact
+          # internal handler count. The plugin-enabled job below exercises the
+          # addon through its promoted MCP surface in a separate editor.
+          # The upstream harness project is authored on its primary engine.
+          # Match its feature marker to the engine under test so the 4.5
+          # compatibility job does not inherit a future-project marker.
+          godot_version = "${{ matrix.godot-version }}"
+          feature = ".".join(godot_version.split(".")[:2])
+          text = text.replace(
+              'config/features=PackedStringArray("4.7")',
+              f'config/features=PackedStringArray("{feature}")',
+              1,
+          )
+          project.write_text(text)
+          PY
+
+      - name: Install pinned Godot AI server
+        shell: bash
+        working-directory: .ci/godot-ai
+        run: python3 -m pip install .
+
+      - name: Import and validate GDScript
+        shell: bash
+        working-directory: .ci/godot-ai
+        run: |
+          set -o pipefail
+          godot --headless --path test_project --import 2>&1 | tee godot-import.log
+          bash script/ci-check-gdscript godot-import.log
+
+      - name: Start MCP server
+        shell: bash
+        working-directory: .ci/godot-ai
+        run: bash script/ci-start-server
+
+      - name: Start Godot editor
+        shell: bash
+        working-directory: .ci/godot-ai
+        run: GODOT_AI_ALLOW_HEADLESS=1 godot --headless --path test_project --editor > godot-editor.log 2>&1 &
+
+      - name: Run upstream and terrain suites
+        shell: bash
+        working-directory: .ci/godot-ai
+        timeout-minutes: 8
+        run: bash script/ci-godot-tests
+
+      - name: Dump Godot editor log on failure
+        if: failure()
+        working-directory: .ci/godot-ai
+        run: tail -n 500 godot-editor.log || true
+
+  plugin-smoke:
+    name: Plugin-enabled live smoke / 4.7.0
+    needs: godot-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout Godot AI v3.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hi-godot/godot-ai
+          ref: v3.2.2
+          path: .ci/godot-ai
+          persist-credentials: false
+
+      - uses: chickensoft-games/setup-godot@f166999204a4f2722c6fe042fbaa3b3ea0d9c789 # v2
+        with:
+          version: "4.7.0"
+          use-dotnet: false
+
+      - name: Install Godot AI and overlay its addon
+        run: |
+          python3 -m pip install .ci/godot-ai
+          cp -R .ci/godot-ai/plugin/addons/godot_ai addons/
+
+      - name: Import and validate the standalone project
+        run: |
+          set -o pipefail
+          godot --headless --path . --import 2>&1 | tee godot-import.log
+          bash .ci/godot-ai/script/ci-check-gdscript godot-import.log
+
+      - name: Start server and plugin-enabled editor
+        run: |
+          python3 -m godot_ai --transport streamable-http --port 8000 --ws-port 9500 > godot-ai-server.log 2>&1 &
+          GODOT_AI_ALLOW_HEADLESS=1 godot --headless --path . --editor > godot-editor.log 2>&1 &
+
+      - name: Run promoted-tool smoke
+        timeout-minutes: 4
+        run: python3 scripts/live_smoke.py --project-root "$PWD"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          tail -n 300 godot-ai-server.log || true
+          tail -n 300 godot-editor.log || true

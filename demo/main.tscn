@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3]
+
+[sub_resource type="Environment" id="Environment_demo"]
+background_mode = 1
+background_color = Color(0.07, 0.1, 0.16, 1)
+ambient_light_source = 3
+ambient_light_color = Color(0.42, 0.5, 0.65, 1)
+ambient_light_energy = 0.65
+tonemap_mode = 2
+
+[node name="TerrainDemo" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_demo")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-52, -28, 0)
+light_color = Color(1, 0.94, 0.82, 1)
+light_energy = 1.2
+shadow_enabled = true
+
+[node name="DemoCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 28, 34)
+current = true
+fov = 50.0
