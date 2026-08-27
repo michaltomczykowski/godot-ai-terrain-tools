@@ -164,7 +164,7 @@ jobs:
 
       - name: Start server and plugin-enabled editor
         run: |
-          python3 -m godot_ai --transport streamable-http --port 8000 --ws-port 9500 > godot-ai-server.log 2>&1 &
+          bash .ci/godot-ai/script/ci-start-server python3 > godot-ai-server.log 2>&1
           GODOT_AI_ALLOW_HEADLESS=1 godot --headless --path . --editor > godot-editor.log 2>&1 &
 
       - name: Run promoted-tool smoke

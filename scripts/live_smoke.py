@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 import time
 
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+
+
+async def connect_client(server_url: str, timeout: float) -> Client:
+    """Connect after the MCP server becomes ready, or fail at the deadline."""
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        client = Client(server_url)
+        try:
+            await client.__aenter__()
+            return client
+        except Exception as error:
+            last_error = error
+            with suppress(Exception):
+                await client.__aexit__(type(error), error, error.__traceback__)
+            await asyncio.sleep(1)
+    raise RuntimeError(f"Godot AI server at {server_url} did not become ready") from last_error
 
 
 async def wait_for_session(client: Client, project_root: Path, timeout: float) -> str:
@@ -53,7 +71,8 @@ async def invoke_busy(server_url: str, session_id: str, name: str):
 
 
 async def run(server_url: str, project_root: Path, timeout: float) -> None:
-    async with Client(server_url) as client:
+    client = await connect_client(server_url, timeout)
+    try:
         session_id = await wait_for_session(client, project_root, timeout)
         await wait_for_promoted_tools(client, timeout)
 
@@ -113,6 +132,8 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
             assert "NODE_NOT_FOUND" in str(error), error
         else:
             raise AssertionError("regeneration did not remove TerrainCollision")
+    finally:
+        await client.__aexit__(None, None, None)
 
     busy_results = await asyncio.gather(
         invoke_busy(server_url, session_id, "CIBusyA"),
