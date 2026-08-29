@@ -1,6 +1,6 @@
 # Godot AI Terrain Tools
 
-![Same prompt, two Godot AI workflows: Terrain Tools compared with stock Godot AI and CSG](docs/terrain-tools-comparison.png)
+![Godot AI Terrain Tools precision landforms, natural erosion, HD surfaces, and semantic painting](docs/terrain-tools-showcase.png)
 
 Godot AI Terrain Tools is an editor-only heightmap authoring addon for Godot
 4.7. It registers nine Godot AI custom tools for deterministic terrain
