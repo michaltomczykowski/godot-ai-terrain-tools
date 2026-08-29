@@ -15,7 +15,7 @@ const TerrainErosionJob := preload("res://addons/godot_ai_terrain_tools/terrain_
 const TerrainPlugin := preload("res://addons/godot_ai_terrain_tools/plugin.gd")
 
 const META_KEY := &"godot_ai_terrain_tools"
-const FORMAT_VERSION := 2
+const FORMAT_VERSION := 3
 
 var _handler: TerrainHandler
 var _undo_redo: EditorUndoRedoManager
@@ -197,7 +197,7 @@ func test_builder_vertex_colors_are_finite() -> void:
 
 func test_normalized_params_reject_invalid_values_and_types() -> void:
 	for invalid in [
-		{"size": 3}, {"size": 129}, {"size": 4.5}, {"size": "48"},
+		{"size": 3}, {"size": 257}, {"size": 4.5}, {"size": "48"},
 		{"cell_size": 0.0}, {"cell_size": -INF}, {"cell_size": INF}, {"cell_size": NAN},
 		{"cell_size": "2.0"},
 		{"frequency": 0.0}, {"frequency": -0.1}, {"frequency": -INF},
@@ -224,7 +224,7 @@ func test_create_validates_before_mutation_for_invalid_options_and_paths() -> vo
 		skip("No edited scene")
 		return
 	var before := root.get_child_count()
-	var bad_options := _handler.create({"size": 129}, null)
+	var bad_options := _handler.create({"size": 257}, null)
 	assert_is_error(bad_options)
 	assert_eq(root.get_child_count(), before)
 	var bad_path := _handler.create({"parent_path": "/%s/does_not_exist" % root.name}, null)
@@ -593,6 +593,7 @@ func test_promoted_specs_expose_the_published_custom_tool_contract() -> void:
 	assert_eq(sculpt_spec.name, "terrain_sculpt")
 	assert_eq(holes_spec.name, "terrain_holes")
 	assert_eq(erode_spec.name, "terrain_erode")
+	assert_eq((create_spec.params_schema.properties.size as Dictionary).maximum, 256)
 	assert_true(create_spec.promoted)
 	assert_true(regenerate_spec.promoted)
 	assert_true(sculpt_spec.promoted)
@@ -642,17 +643,26 @@ func test_registration_batch_adds_both_specs_and_source_cleanup_removes_them() -
 	assert_true(_registry_test_registry.get_spec("terrain_sculpt") != null)
 	assert_true(_registry_test_registry.get_spec("terrain_holes") != null)
 	assert_true(_registry_test_registry.get_spec("terrain_erode") != null)
+	assert_true(_registry_test_registry.get_spec("terrain_road") != null)
+	assert_true(_registry_test_registry.get_spec("terrain_paint") != null)
+	assert_true(_registry_test_registry.get_spec("terrain_material") != null)
 	assert_true(dispatcher.has_command("custom_tool:terrain_create"))
 	assert_true(dispatcher.has_command("custom_tool:terrain_regenerate"))
 	assert_true(dispatcher.has_command("custom_tool:terrain_sculpt"))
 	assert_true(dispatcher.has_command("custom_tool:terrain_holes"))
 	assert_true(dispatcher.has_command("custom_tool:terrain_erode"))
-	assert_eq(_registry_test_registry.unregister_source(plugin.SOURCE_PATH), 5)
+	assert_true(dispatcher.has_command("custom_tool:terrain_road"))
+	assert_true(dispatcher.has_command("custom_tool:terrain_paint"))
+	assert_true(dispatcher.has_command("custom_tool:terrain_material"))
+	assert_eq(_registry_test_registry.unregister_source(plugin.SOURCE_PATH), 9)
 	assert_true(_registry_test_registry.get_spec("terrain_create") == null)
 	assert_false(dispatcher.has_command("custom_tool:terrain_regenerate"))
 	assert_false(dispatcher.has_command("custom_tool:terrain_sculpt"))
 	assert_false(dispatcher.has_command("custom_tool:terrain_holes"))
 	assert_false(dispatcher.has_command("custom_tool:terrain_erode"))
+	assert_false(dispatcher.has_command("custom_tool:terrain_road"))
+	assert_false(dispatcher.has_command("custom_tool:terrain_paint"))
+	assert_false(dispatcher.has_command("custom_tool:terrain_material"))
 
 
 ## ----- persistent authoring data, palettes, and editor operations -----
@@ -820,7 +830,7 @@ func test_builder_consumes_terrain_data_and_reports_mesh_counts() -> void:
 	assert_eq(_mesh_colors(built).size(), 49)
 
 
-func test_material_palette_presets_are_published_and_change_finite_vertex_colors() -> void:
+func test_material_palette_presets_are_published_and_change_shader_tints() -> void:
 	var plugin := track(TerrainPlugin.new())
 	var spec: McpCustomToolSpec = plugin._create_spec()
 	var material_property := _schema_property(spec, "material_preset")
@@ -828,17 +838,21 @@ func test_material_palette_presets_are_published_and_change_finite_vertex_colors
 	assert_has_key(material_property, "enum")
 	var presets: Array = material_property.enum
 	assert_gt(presets.size(), 1, "the authoring upgrade must publish multiple material palettes")
-	var first_colors := PackedColorArray()
+	var first_tint := Color()
 	for index in presets.size():
 		var built := _build({"size": 8, "seed": 23, "material_preset": presets[index]})
 		var colors := _mesh_colors(built)
 		assert_eq(colors.size(), 64)
 		for color in colors:
 			_assert_finite_color(color)
+		var material := (built.mesh as Mesh).surface_get_material(0) as ShaderMaterial
+		assert_true(material != null)
+		var tint: Color = material.get_shader_parameter("ground_color")
+		_assert_finite_color(tint)
 		if index == 0:
-			first_colors = colors
+			first_tint = tint
 		else:
-			assert_ne(colors, first_colors, "palette presets must affect vertex colors")
+			assert_ne(tint, first_tint, "palette presets must affect shader tints")
 
 
 func test_sculpt_validation_rejects_bad_paths_brushes_and_modes_without_mutation() -> void:

@@ -9,7 +9,10 @@ var _algorithm: String
 var _iterations: int
 var _intensity: float
 var _seed: int
+var _settings: Dictionary
 var _size: int
+var _cell: float
+var _half: float
 var _iteration := 0
 var _cursor := 0
 var _heights := PackedFloat32Array()
@@ -24,13 +27,16 @@ var _next_sediment := PackedFloat32Array()
 var _affected := {}
 
 
-func _init(data: Resource, algorithm: String, iterations: int, intensity: float, seed: int) -> void:
+func _init(data: Resource, algorithm: String, iterations: int, intensity: float, seed: int, settings: Dictionary = {}) -> void:
 	_data = data
 	_algorithm = algorithm
 	_iterations = iterations
 	_intensity = intensity
 	_seed = seed
+	_settings = settings.duplicate(true)
 	_size = int(data.params.size)
+	_cell = float(data.params.cell_size)
+	_half = (_size - 1) * _cell * 0.5
 	_heights = data.final_heights()
 	_water.resize(_heights.size())
 	_sediment.resize(_heights.size())
@@ -46,8 +52,12 @@ func step(budget_usec: int = 3000) -> bool:
 		if _data.holes[_cursor] == 0:
 			if _algorithm == "thermal":
 				_step_thermal(_cursor)
-			else:
+			elif _algorithm == "hydraulic":
 				_step_hydraulic(_cursor)
+			elif _algorithm == "thermal_natural":
+				_step_thermal_natural(_cursor)
+			else:
+				_step_hydraulic_natural(_cursor)
 		_cursor += 1
 	if _iteration >= _iterations:
 		_store_offsets()
@@ -132,6 +142,65 @@ func _step_hydraulic(index: int) -> void:
 	_next_sediment[index] = maxf(0.0, _next_sediment[index])
 
 
+func _step_thermal_natural(index: int) -> void:
+	if not _inside_region(index):
+		return
+	var talus := float(_settings.get("talus", 0.15)) * maxf(_cell, 0.01)
+	var candidates: Array[Vector2] = []
+	var total_excess := 0.0
+	for neighbor in _neighbors8(index):
+		if _data.holes[neighbor] != 0 or not _inside_region(neighbor):
+			continue
+		var distance := _neighbor_distance(index, neighbor)
+		var excess := (_source[index] - _source[neighbor]) / distance - talus
+		if excess > 0.0:
+			candidates.append(Vector2(neighbor, excess))
+			total_excess += excess
+	if total_excess <= 0.0:
+		return
+	var preserve := _ridge_factor(index)
+	var total_move := minf(total_excess * 0.08 * _intensity * preserve, maxf(0.0, _source[index] - _minimum_neighbor_height(index)) * 0.35)
+	if total_move <= 0.0:
+		return
+	for candidate in candidates:
+		var amount := total_move * candidate.y / total_excess
+		_next[index] -= amount
+		_next[int(candidate.x)] += amount
+		_affected[int(candidate.x)] = true
+	_affected[index] = true
+
+
+func _step_hydraulic_natural(index: int) -> void:
+	if not _inside_region(index):
+		return
+	var candidates: Array[Vector2] = []
+	var total_drop := 0.0
+	var rain := float(_settings.get("rain", 0.8)) * (0.75 + 0.5 * _hash_unit(index, _iteration, _seed))
+	for neighbor in _neighbors8(index):
+		if _data.holes[neighbor] != 0 or not _inside_region(neighbor):
+			continue
+		var distance := _neighbor_distance(index, neighbor)
+		var drop := (_source[index] - _source[neighbor]) / distance
+		if drop > 0.0:
+			candidates.append(Vector2(neighbor, drop))
+			total_drop += drop
+	if total_drop <= 0.0:
+		return
+	var erosion_rate := float(_settings.get("erosion", 0.4))
+	var deposition := float(_settings.get("deposition", 0.3))
+	var evaporation := float(_settings.get("evaporation", 0.08))
+	var transport := rain * erosion_rate * (1.0 - evaporation) * (1.0 - deposition * 0.35)
+	var total_move := minf(total_drop * 0.018 * _intensity * transport * _ridge_factor(index), maxf(0.0, _source[index] - _minimum_neighbor_height(index)) * 0.28)
+	if total_move <= 0.0:
+		return
+	for candidate in candidates:
+		var amount := total_move * candidate.y / total_drop
+		_next[index] -= amount
+		_next[int(candidate.x)] += amount
+		_affected[int(candidate.x)] = true
+	_affected[index] = true
+
+
 func _lowest_neighbor(index: int, values: PackedFloat32Array) -> int:
 	var result := -1
 	var lowest := values[index]
@@ -168,6 +237,73 @@ func _neighbors(index: int) -> PackedInt32Array:
 	if z + 1 < _size:
 		result.append(index + _size)
 	return result
+
+
+func _neighbors8(index: int) -> PackedInt32Array:
+	var x: int = index % _size
+	var z := int(index / _size)
+	var result := PackedInt32Array()
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			if dx == 0 and dz == 0:
+				continue
+			var nx := x + dx
+			var nz := z + dz
+			if nx >= 0 and nx < _size and nz >= 0 and nz < _size:
+				result.append(nz * _size + nx)
+	return result
+
+
+func _inside_region(index: int) -> bool:
+	if not _settings.has("region"):
+		return true
+	var region: Dictionary = _settings.region
+	var x: int = index % _size
+	var z := int(index / _size)
+	var position := Vector2(x * _cell - _half, z * _cell - _half)
+	if region.has("points"):
+		var points: Array = region.points
+		var closest := INF
+		for point_index in range(points.size() - 1):
+			var start: Vector2 = points[point_index]
+			var finish: Vector2 = points[point_index + 1]
+			var segment := finish - start
+			var length_squared := segment.length_squared()
+			var t := 0.0 if length_squared <= 0.000001 else clampf((position - start).dot(segment) / length_squared, 0.0, 1.0)
+			closest = minf(closest, position.distance_to(start + segment * t))
+		return closest <= float(region.radius)
+	return position.distance_to(Vector2(float(region.center_x), float(region.center_z))) <= float(region.radius)
+
+
+func _neighbor_distance(index: int, neighbor: int) -> float:
+	var x0: int = index % _size
+	var z0 := int(index / _size)
+	var x1: int = neighbor % _size
+	var z1 := int(neighbor / _size)
+	return Vector2(x1 - x0, z1 - z0).length() * _cell
+
+
+func _minimum_neighbor_height(index: int) -> float:
+	var result := _source[index]
+	for neighbor in _neighbors8(index):
+		if _data.holes[neighbor] == 0 and _inside_region(neighbor):
+			result = minf(result, _source[neighbor])
+	return result
+
+
+func _ridge_factor(index: int) -> float:
+	var preservation := float(_settings.get("ridge_preservation", 0.0))
+	if preservation <= 0.0:
+		return 1.0
+	var average := 0.0
+	var count := 0
+	for neighbor in _neighbors8(index):
+		if _data.holes[neighbor] == 0:
+			average += _source[neighbor]
+			count += 1
+	if count == 0 or _source[index] <= average / count:
+		return 1.0
+	return 1.0 - preservation
 
 
 func _store_offsets() -> void:

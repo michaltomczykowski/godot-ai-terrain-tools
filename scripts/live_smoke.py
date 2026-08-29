@@ -11,6 +11,31 @@ from pathlib import Path
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
+## Godot AI promotes at most eight addon tools. Material remains in the
+## complete custom-tool catalog and is exercised through custom_manage.
+PROMOTED_TERRAIN_TOOLS = {
+    "custom_terrain_create",
+    "custom_terrain_regenerate",
+    "custom_terrain_sculpt",
+    "custom_terrain_holes",
+    "custom_terrain_erode",
+    "custom_terrain_road",
+    "custom_terrain_paint",
+    "custom_terrain_landform",
+}
+
+REGISTERED_TERRAIN_TOOLS = {
+    "terrain_create",
+    "terrain_regenerate",
+    "terrain_sculpt",
+    "terrain_holes",
+    "terrain_erode",
+    "terrain_road",
+    "terrain_paint",
+    "terrain_material",
+    "terrain_landform",
+}
+
 
 async def connect_client(server_url: str, timeout: float) -> Client:
     """Connect after the MCP server becomes ready, or fail at the deadline."""
@@ -45,20 +70,40 @@ async def wait_for_session(client: Client, project_root: Path, timeout: float) -
 
 
 async def wait_for_promoted_tools(client: Client, timeout: float) -> None:
-    expected = {
-        "custom_terrain_create",
-        "custom_terrain_regenerate",
-        "custom_terrain_sculpt",
-        "custom_terrain_holes",
-        "custom_terrain_erode",
-    }
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         names = {tool.name for tool in await client.list_tools()}
-        if expected <= names:
+        if PROMOTED_TERRAIN_TOOLS <= names:
             return
         await asyncio.sleep(0.5)
     raise RuntimeError("promoted terrain tools were not exposed by tools/list")
+
+
+async def wait_for_registered_tools(
+    client: Client, session_id: str, timeout: float
+) -> dict:
+    """Wait for all nine registry entries exposed by custom_manage(list)."""
+    deadline = time.monotonic() + timeout
+    last_names: set[str] = set()
+    while time.monotonic() < deadline:
+        result = await client.call_tool(
+            "custom_manage",
+            {"op": "list", "params": {}, "session_id": session_id},
+        )
+        data = result.structured_content or {}
+        tools = data.get("tools", [])
+        last_names = {
+            str(tool.get("name"))
+            for tool in tools
+            if isinstance(tool, dict) and tool.get("name")
+        }
+        if REGISTERED_TERRAIN_TOOLS <= last_names:
+            return data
+        await asyncio.sleep(0.5)
+    missing = sorted(REGISTERED_TERRAIN_TOOLS - last_names)
+    raise RuntimeError(
+        f"custom_manage list did not expose all nine terrain tools; missing {missing}"
+    )
 
 
 def _schema_dict(value):
@@ -222,19 +267,26 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
     client = await connect_client(server_url, timeout)
     try:
         session_id = await wait_for_session(client, project_root, timeout)
+        # Promoted custom tools intentionally route through the active editor;
+        # pin it explicitly so local multi-project servers cannot steal calls.
+        await client.call_tool("session_activate", {"session_id": session_id})
         await wait_for_promoted_tools(client, timeout)
         promoted = {
             tool.name: tool
             for tool in await client.list_tools()
             if tool.name.startswith("custom_terrain_")
         }
-        assert {
-            "custom_terrain_create",
-            "custom_terrain_regenerate",
-            "custom_terrain_sculpt",
-            "custom_terrain_holes",
-            "custom_terrain_erode",
-        } <= promoted.keys(), promoted.keys()
+        assert PROMOTED_TERRAIN_TOOLS <= promoted.keys(), promoted.keys()
+        assert "custom_terrain_material" not in promoted, promoted.keys()
+        registered_catalog = await wait_for_registered_tools(
+            client, session_id, timeout
+        )
+        registered_names = {
+            str(tool.get("name"))
+            for tool in registered_catalog.get("tools", [])
+            if isinstance(tool, dict) and tool.get("name")
+        }
+        assert REGISTERED_TERRAIN_TOOLS <= registered_names, registered_names
 
         tests = await client.call_tool(
             "test_run",
@@ -277,6 +329,8 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
             ("custom_terrain_holes", "cut"),
             ("custom_terrain_erode", "thermal"),
             ("custom_terrain_erode", "hydraulic"),
+            ("custom_terrain_erode", "thermal_natural"),
+            ("custom_terrain_erode", "hydraulic_natural"),
         ):
             args = _operation_args(promoted[tool_name], "/TerrainDemo/CITerrain", mode)
             if tool_name == "custom_terrain_sculpt":
@@ -330,6 +384,122 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
         assert operation_results["cut"].get("hole_vertices", 0) > 0
         assert operation_results["thermal"].get("affected_vertices", 0) > 0
         assert operation_results["hydraulic"].get("affected_vertices", 0) > 0
+        assert operation_results["thermal_natural"].get("affected_vertices", 0) > 0
+        assert operation_results["hydraulic_natural"].get("affected_vertices", 0) > 0
+
+        landform_result = await client.call_tool(
+            "custom_terrain_landform",
+            {
+                "path": "/TerrainDemo/CITerrain",
+                "features": [
+                    {
+                        "type": "ridge",
+                        "points": [
+                            {"x": -7.0, "z": -5.0},
+                            {"x": 0.0, "z": 0.0},
+                            {"x": 7.0, "z": 5.0},
+                        ],
+                        "width": 2.0,
+                        "falloff_width": 2.0,
+                        "profile": "sharp",
+                        "height": 1.5,
+                        "roughness": 0.15,
+                        "scale": 3.0,
+                        "seed": 31,
+                    },
+                    {
+                        "type": "valley",
+                        "points": [{"x": -7.0, "z": 6.0}, {"x": 7.0, "z": 6.0}],
+                        "width": 2.5,
+                        "falloff_width": 1.5,
+                        "profile": "smooth",
+                        "height": -0.5,
+                        "seed": 32,
+                    },
+                ],
+                "session_id": session_id,
+            },
+        )
+        landform_data = landform_result.structured_content or {}
+        assert landform_data.get("status") != "error" and not landform_data.get(
+            "error"
+        ), landform_data
+        assert landform_data.get("affected_vertices", 0) > 0, landform_data
+
+        road_result = await client.call_tool(
+            "custom_terrain_road",
+            {
+                "path": "/TerrainDemo/CITerrain",
+                "points": [
+                    {"x": -7.0, "z": -6.0},
+                    {"x": 0.0, "z": 0.0},
+                    {"x": 7.0, "z": 6.0},
+                ],
+                "width": 2.5,
+                "shoulder_width": 1.5,
+                "elevation_mode": "follow_smooth",
+                "max_grade": 1.0,
+                "smoothing_passes": 2,
+                "falloff": "smooth",
+                "paint_road": True,
+                "session_id": session_id,
+            },
+        )
+        road_data = road_result.structured_content or {}
+        assert road_data.get("status") != "error" and not road_data.get("error"), (
+            road_data
+        )
+        assert road_data.get("affected_vertices", 0) > 0, road_data
+        assert road_data.get("painted_vertices", 0) > 0, road_data
+
+        paint_result = await client.call_tool(
+            "custom_terrain_paint",
+            {
+                "path": "/TerrainDemo/CITerrain",
+                "strokes": [
+                    {
+                        "points": [
+                            {"x": -6.0, "z": 0.0},
+                            {"x": 0.0, "z": 0.0},
+                            {"x": 6.0, "z": 0.0},
+                        ],
+                        "radius": 1.5,
+                        "strength": 0.8,
+                        "falloff": "smooth",
+                        "layer": "road",
+                    }
+                ],
+                "session_id": session_id,
+            },
+        )
+        paint_data = paint_result.structured_content or {}
+        assert paint_data.get("status") != "error" and not paint_data.get("error"), (
+            paint_data
+        )
+        assert paint_data.get("affected_vertices", 0) > 0, paint_data
+
+        material_result = await client.call_tool(
+            "custom_manage",
+            {
+                "op": "invoke",
+                "params": {
+                    "tool_name": "terrain_material",
+                    "params": {
+                        "path": "/TerrainDemo/CITerrain",
+                        "render_mode": "bundled",
+                        "texture_scale": 0.2,
+                    },
+                },
+                "session_id": session_id,
+            },
+        )
+        material_data = material_result.structured_content or {}
+        assert material_data.get("status") != "error" and not material_data.get(
+            "error"
+        ), material_data
+        material_params = material_data.get("params", {})
+        assert material_params.get("render_mode") == "bundled", material_data
+        assert material_params.get("texture_scale") == 0.2, material_data
 
         fill_args = _operation_args(
             promoted["custom_terrain_holes"], "/TerrainDemo/CITerrain", "fill"
@@ -421,8 +591,9 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
         failures[0]
     )
     print(
-        f"Live smoke passed: {suite_total} tests, promoted create/regenerate/sculpt/holes/erode, "
-        "collision, persistence, thermal/hydraulic erosion, BUSY"
+        f"Live smoke passed: {suite_total} tests, 8 promoted/9 registered terrain tools, "
+        "landforms, road grading, semantic paint, bundled material, collision, "
+        "persistence, compatibility/natural erosion, BUSY"
     )
 
 

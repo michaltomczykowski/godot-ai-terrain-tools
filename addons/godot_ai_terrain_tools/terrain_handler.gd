@@ -4,37 +4,51 @@ extends RefCounted
 const TerrainData := preload("res://addons/godot_ai_terrain_tools/terrain_data.gd")
 const TerrainBuildJob := preload("res://addons/godot_ai_terrain_tools/terrain_build_job.gd")
 const TerrainErosionJob := preload("res://addons/godot_ai_terrain_tools/terrain_erosion_job.gd")
+const TerrainRoadJob := preload("res://addons/godot_ai_terrain_tools/terrain_road_job.gd")
+const TerrainPaintJob := preload("res://addons/godot_ai_terrain_tools/terrain_paint_job.gd")
+const TerrainLandformJob := preload("res://addons/godot_ai_terrain_tools/terrain_landform_job.gd")
 
 const MIN_SIZE := 4
-const MAX_SIZE := 128
+const MAX_SIZE := 256
 const FRAME_BUDGET_USEC := 3000
 const BUSY_RECOVERY_MSEC := 35000
 const MAX_NUMBER_MAGNITUDE := 1000000.0
 const MAX_HEIGHT_MAGNITUDE := 1000000000.0
-const FORMAT_VERSION := 2
+const FORMAT_VERSION := 3
+const PREVIOUS_FORMAT_VERSION := 2
 const LEGACY_FORMAT_VERSION := 1
 const MESH_CHILD := "TerrainMesh"
 const COLLISION_CHILD := "TerrainCollision"
 const META_KEY := &"godot_ai_terrain_tools"
 const MATERIAL_PRESETS := ["natural", "desert", "snow", "volcanic", "alien"]
+const RENDER_MODES := ["procedural", "bundled", "custom"]
+const SURFACE_PROFILES := ["mountain_valley", "forest", "arid", "legacy"]
+const PAINT_LAYERS := ["ground", "road", "dirt", "sand", "rock", "snow", "auto"]
 const PARAM_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
 	"height_scale", "base_height", "generate_collision", "material_preset",
+	"render_mode", "texture_scale", "custom_textures", "surface_profile", "texture_variants",
 ]
 ## Literal arrays retain Godot 4.5 constant-expression compatibility.
 const CREATE_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
 	"height_scale", "base_height", "generate_collision", "material_preset",
+	"render_mode", "texture_scale", "custom_textures", "surface_profile", "texture_variants",
 	"parent_path", "scene_file", "name", "session_id",
 ]
 const REGENERATE_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
 	"height_scale", "base_height", "generate_collision", "material_preset",
+	"render_mode", "texture_scale", "custom_textures", "surface_profile", "texture_variants",
 	"reset_modifications", "path", "scene_file", "session_id",
 ]
 const EDIT_KEYS := ["path", "scene_file", "session_id", "strokes"]
 const HOLE_KEYS := ["path", "scene_file", "session_id", "areas"]
-const EROSION_KEYS := ["path", "scene_file", "session_id", "algorithm", "iterations", "intensity", "seed"]
+const EROSION_KEYS := ["path", "scene_file", "session_id", "algorithm", "iterations", "intensity", "seed", "preset", "region", "rain", "erosion", "deposition", "evaporation", "talus", "ridge_preservation"]
+const LANDFORM_KEYS := ["path", "scene_file", "session_id", "features"]
+const ROAD_KEYS := ["path", "scene_file", "session_id", "points", "width", "shoulder_width", "elevation_mode", "start_height", "end_height", "max_grade", "smoothing_passes", "paint_road", "falloff"]
+const PAINT_KEYS := ["path", "scene_file", "session_id", "strokes"]
+const MATERIAL_KEYS := ["path", "scene_file", "session_id", "render_mode", "texture_scale", "custom_textures", "material_preset", "surface_profile", "texture_variants"]
 const NOISE_TYPES := ["simplex", "simplex_smooth", "perlin", "ridged", "value"]
 const STROKE_MODES := ["raise", "lower", "smooth", "flatten", "noise"]
 const FALLOFFS := ["smooth", "linear"]
@@ -169,6 +183,82 @@ func erode(params: Dictionary, ctx) -> Dictionary:
 	return {"_deferred": true}
 
 
+func landform(params: Dictionary, ctx) -> Dictionary:
+	var busy := _busy_error()
+	if not busy.is_empty():
+		return busy
+	var request_error := _validate_request(params, LANDFORM_KEYS, ["path", "scene_file"])
+	if not request_error.is_empty():
+		return request_error
+	var normalized := _normalized_landforms(params.get("features"))
+	if normalized.has("error"):
+		return normalized
+	var target := _managed_target(params)
+	if target.has("error"):
+		return target
+	_claim_busy()
+	_finish_landform(normalized.items, target, ctx)
+	return {"_deferred": true}
+
+
+func road(params: Dictionary, ctx) -> Dictionary:
+	var busy := _busy_error()
+	if not busy.is_empty():
+		return busy
+	var request_error := _validate_request(params, ROAD_KEYS, ["path", "scene_file", "elevation_mode", "falloff"])
+	if not request_error.is_empty():
+		return request_error
+	var normalized := _normalized_road(params)
+	if normalized.has("error"):
+		return normalized
+	var target := _managed_target(params)
+	if target.has("error"):
+		return target
+	_claim_busy()
+	_finish_road(normalized.settings, target, ctx)
+	return {"_deferred": true}
+
+
+func paint(params: Dictionary, ctx) -> Dictionary:
+	var busy := _busy_error()
+	if not busy.is_empty():
+		return busy
+	var request_error := _validate_request(params, PAINT_KEYS, ["path", "scene_file"])
+	if not request_error.is_empty():
+		return request_error
+	var normalized := _normalized_paint_strokes(params.get("strokes"))
+	if normalized.has("error"):
+		return normalized
+	var target := _managed_target(params)
+	if target.has("error"):
+		return target
+	_claim_busy()
+	_finish_paint(normalized.items, target, ctx)
+	return {"_deferred": true}
+
+
+func material(params: Dictionary, ctx) -> Dictionary:
+	var busy := _busy_error()
+	if not busy.is_empty():
+		return busy
+	var request_error := _validate_request(params, MATERIAL_KEYS, ["path", "scene_file", "render_mode", "material_preset"])
+	if not request_error.is_empty():
+		return request_error
+	var target := _managed_target(params)
+	if target.has("error"):
+		return target
+	var merged: Dictionary = target.state.params.duplicate(true)
+	for key in ["render_mode", "texture_scale", "custom_textures", "material_preset", "surface_profile", "texture_variants"]:
+		if params.has(key):
+			merged[key] = params[key]
+	var checked := _normalized_params(merged)
+	if checked.has("error"):
+		return checked
+	_claim_busy()
+	_finish_material(checked.params, target, ctx)
+	return {"_deferred": true}
+
+
 func _finish_create(p: Dictionary, terrain_name: String, parent: Node, root: Node, expected_parent_path: NodePath, ctx) -> void:
 	await _next_frame()
 	var built := await _build_incrementally(p, ctx)
@@ -220,6 +310,9 @@ func _regenerated_data(p: Dictionary, old_data: Resource, reset: bool) -> Resour
 	if old_data != null and not reset and int(old_data.params.size) == int(p.size):
 		data.edit_offsets = old_data.edit_offsets.duplicate()
 		data.holes = old_data.holes.duplicate()
+		if old_data.paint_weights.size() == data.paint_weights.size():
+			data.paint_weights = old_data.paint_weights.duplicate()
+			data.paint_coverage = old_data.paint_coverage.duplicate()
 	return data
 
 
@@ -269,7 +362,7 @@ func _finish_erode(settings: Dictionary, target: Dictionary, ctx) -> void:
 	if _finish_error(prepared, ctx):
 		return
 	var data: Resource = prepared.data.snapshot()
-	var job := TerrainErosionJob.new(data, settings.algorithm, settings.iterations, settings.intensity, settings.seed)
+	var job := TerrainErosionJob.new(data, settings.algorithm, settings.iterations, settings.intensity, settings.seed, settings)
 	while not job.step(FRAME_BUDGET_USEC):
 		if ctx.is_expired():
 			_send_error(ctx, _error("terrain_tools.TIMEOUT", "Terrain erosion exceeded its deadline"))
@@ -289,6 +382,95 @@ func _finish_erode(settings: Dictionary, target: Dictionary, ctx) -> void:
 	_commit_replacement("Erode", target, built)
 	_release_busy()
 	ctx.send_deferred({"data": _response(target.container, target.root, data, built, "erode", {"affected_vertices": eroded.affected_vertices, "algorithm": settings.algorithm})})
+
+
+func _finish_landform(features: Array, target: Dictionary, ctx) -> void:
+	await _next_frame()
+	var prepared := await _materialize_data(target.state, ctx)
+	if _finish_error(prepared, ctx):
+		return
+	var data: Resource = prepared.data.snapshot()
+	var applied := await _apply_landforms(data, features, ctx)
+	if _finish_error(applied, ctx):
+		return
+	var built := await _build_incrementally(data, ctx)
+	if _finish_error(built, ctx):
+		return
+	if not _target_still_valid(target):
+		_send_error(ctx, _error("EDITED_SCENE_MISMATCH", "The edited scene changed while landforms were being generated"))
+		return
+	_commit_replacement("Landform", target, built)
+	_release_busy()
+	ctx.send_deferred({"data": _response(target.container, target.root, data, built, "landform", {"affected_vertices": applied.affected_vertices})})
+
+
+func _finish_road(settings: Dictionary, target: Dictionary, ctx) -> void:
+	await _next_frame()
+	var prepared := await _materialize_data(target.state, ctx)
+	if _finish_error(prepared, ctx):
+		return
+	var data: Resource = prepared.data.snapshot()
+	var applied := await _apply_road(data, settings, ctx)
+	if _finish_error(applied, ctx):
+		return
+	var built := await _build_incrementally(data, ctx)
+	if _finish_error(built, ctx):
+		return
+	if not _target_still_valid(target):
+		_send_error(ctx, _error("EDITED_SCENE_MISMATCH", "The edited scene changed while the road was being generated"))
+		return
+	_commit_replacement("Road", target, built)
+	_release_busy()
+	ctx.send_deferred({"data": _response(target.container, target.root, data, built, "road", {
+		"affected_vertices": applied.affected_vertices,
+		"painted_vertices": applied.painted_vertices,
+		"road_length": applied.road_length,
+	})})
+
+
+func _finish_paint(strokes: Array, target: Dictionary, ctx) -> void:
+	await _next_frame()
+	var prepared := await _materialize_data(target.state, ctx)
+	if _finish_error(prepared, ctx):
+		return
+	var data: Resource = prepared.data.snapshot()
+	var applied := await _apply_paint(data, strokes, ctx)
+	if _finish_error(applied, ctx):
+		return
+	var built := await _build_incrementally(data, ctx)
+	if _finish_error(built, ctx):
+		return
+	if not _target_still_valid(target):
+		_send_error(ctx, _error("EDITED_SCENE_MISMATCH", "The edited scene changed while terrain was being painted"))
+		return
+	_commit_replacement("Paint", target, built)
+	_release_busy()
+	ctx.send_deferred({"data": _response(target.container, target.root, data, built, "paint", {
+		"affected_vertices": applied.affected_vertices,
+	})})
+
+
+func _finish_material(params: Dictionary, target: Dictionary, ctx) -> void:
+	await _next_frame()
+	var prepared := await _materialize_data(target.state, ctx)
+	if _finish_error(prepared, ctx):
+		return
+	var data: Resource = _regenerated_material_data(params, prepared.data)
+	var built := await _build_incrementally(data, ctx)
+	if _finish_error(built, ctx):
+		return
+	if not _target_still_valid(target):
+		_send_error(ctx, _error("EDITED_SCENE_MISMATCH", "The edited scene changed while the terrain material was being updated"))
+		return
+	_commit_replacement("Material", target, built)
+	_release_busy()
+	ctx.send_deferred({"data": _response(target.container, target.root, data, built, "material")})
+
+
+func _regenerated_material_data(params: Dictionary, old_data: Resource) -> Resource:
+	var data: Resource = old_data.snapshot()
+	data.params = params.duplicate(true)
+	return data
 
 
 func _commit_replacement(label: String, target: Dictionary, built: Dictionary) -> void:
@@ -332,9 +514,9 @@ func _build_incrementally(input: Variant, ctx) -> Dictionary:
 
 func _apply_strokes(data: Resource, strokes: Array, ctx) -> Dictionary:
 	var changed := {}
-	var size := int(data.params.size)
-	var cell := float(data.params.cell_size)
-	var half := (size - 1) * cell * 0.5
+	var size: int = int(data.params.size)
+	var cell: float = float(data.params.cell_size)
+	var half: float = (size - 1) * cell * 0.5
 	var processed := 0
 	for stroke_value in strokes:
 		var stroke: Dictionary = stroke_value
@@ -343,37 +525,33 @@ func _apply_strokes(data: Resource, strokes: Array, ctx) -> Dictionary:
 		if stroke.mode == "noise":
 			noise.seed = stroke.seed
 			noise.frequency = 0.15 / cell
-		for index in source.size():
-			var x: int = index % size
-			var z := int(index / size)
-			var distance := Vector2(x * cell - half - stroke.center_x, z * cell - half - stroke.center_z).length()
-			if distance <= stroke.radius:
-				var weight: float = 1.0 - distance / float(stroke.radius)
-				if stroke.falloff == "smooth":
-					weight = weight * weight * (3.0 - 2.0 * weight)
-				var current: float = source[index]
-				var updated: float = current
-				match stroke.mode:
-					"raise":
-						updated += stroke.strength * weight
-					"lower":
-						updated -= stroke.strength * weight
-					"flatten":
-						updated = lerpf(current, stroke.target_height, minf(1.0, stroke.strength * weight))
-					"smooth":
-						updated = lerpf(current, _neighbor_average(source, index, size), minf(1.0, stroke.strength * weight))
-					"noise":
-						updated += noise.get_noise_2d(x, z) * stroke.strength * weight
-				if not is_equal_approx(current, updated):
-					if not is_finite(updated) or absf(updated) > MAX_HEIGHT_MAGNITUDE:
-						return _error("VALUE_OUT_OF_RANGE", "Sculpting produced a height outside the supported range")
-					data.edit_offsets[index] = updated - data.base_heights[index]
-					changed[index] = true
-			processed += 1
-			if processed % 2048 == 0:
-				if ctx != null and ctx.is_expired():
-					return _error("terrain_tools.TIMEOUT", "Terrain sculpting exceeded its deadline")
-				await _next_frame()
+		var bounds := _circle_grid_bounds(size, cell, half, Vector2(stroke.center_x, stroke.center_z), stroke.radius)
+		for z in range(bounds.min_z, bounds.max_z + 1):
+			for x in range(bounds.min_x, bounds.max_x + 1):
+				var index: int = z * size + x
+				var distance := Vector2(x * cell - half - stroke.center_x, z * cell - half - stroke.center_z).length()
+				if distance <= stroke.radius:
+					var weight: float = 1.0 - distance / float(stroke.radius)
+					if stroke.falloff == "smooth":
+						weight = weight * weight * (3.0 - 2.0 * weight)
+					var current: float = source[index]
+					var updated: float = current
+					match stroke.mode:
+						"raise": updated += stroke.strength * weight
+						"lower": updated -= stroke.strength * weight
+						"flatten": updated = lerpf(current, stroke.target_height, minf(1.0, stroke.strength * weight))
+						"smooth": updated = lerpf(current, _neighbor_average(source, index, size), minf(1.0, stroke.strength * weight))
+						"noise": updated += noise.get_noise_2d(x, z) * stroke.strength * weight
+					if not is_equal_approx(current, updated):
+						if not is_finite(updated) or absf(updated) > MAX_HEIGHT_MAGNITUDE:
+							return _error("VALUE_OUT_OF_RANGE", "Sculpting produced a height outside the supported range")
+						data.edit_offsets[index] = updated - data.base_heights[index]
+						changed[index] = true
+				processed += 1
+				if processed % 2048 == 0:
+					if ctx != null and ctx.is_expired():
+						return _error("terrain_tools.TIMEOUT", "Terrain sculpting exceeded its deadline")
+					await _next_frame()
 	return {"affected_vertices": changed.size()}
 
 
@@ -386,19 +564,274 @@ func _apply_holes(data: Resource, areas: Array, ctx) -> Dictionary:
 	for area_value in areas:
 		var area: Dictionary = area_value
 		var value := 1 if area.mode == "cut" else 0
-		for index in data.holes.size():
+		var bounds := _circle_grid_bounds(size, cell, half, Vector2(area.center_x, area.center_z), area.radius)
+		for z in range(bounds.min_z, bounds.max_z + 1):
+			for x in range(bounds.min_x, bounds.max_x + 1):
+				var index: int = z * size + x
+				var distance := Vector2(x * cell - half - area.center_x, z * cell - half - area.center_z).length()
+				if distance <= area.radius and data.holes[index] != value:
+					data.holes[index] = value
+					changed[index] = true
+				processed += 1
+				if processed % 4096 == 0:
+					if ctx != null and ctx.is_expired():
+						return _error("terrain_tools.TIMEOUT", "Terrain hole generation exceeded its deadline")
+					await _next_frame()
+	return {"affected_vertices": changed.size()}
+
+
+func _apply_landforms(data: Resource, features: Array, ctx) -> Dictionary:
+	var job := TerrainLandformJob.new(data, features)
+	while not job.step(FRAME_BUDGET_USEC):
+		if ctx != null and ctx.is_expired():
+			return _error("terrain_tools.TIMEOUT", "Terrain landform generation exceeded its deadline")
+		await _next_frame()
+	return job.result()
+
+
+func _apply_landforms_sync(data: Resource, features: Array) -> Dictionary:
+	var job := TerrainLandformJob.new(data, features)
+	while not job.step(1000000):
+		pass
+	return job.result()
+
+
+func _apply_erosion_sync(data: Resource, settings: Dictionary) -> Dictionary:
+	var job := TerrainErosionJob.new(data, settings.algorithm, settings.iterations, settings.intensity, settings.seed, settings)
+	while not job.step(1000000):
+		pass
+	return job.result()
+
+
+static func _circle_grid_bounds(size: int, cell: float, half: float, center: Vector2, radius: float) -> Dictionary:
+	return {
+		"min_x": clampi(int(floor((center.x - radius + half) / cell)), 0, size - 1),
+		"max_x": clampi(int(ceil((center.x + radius + half) / cell)), 0, size - 1),
+		"min_z": clampi(int(floor((center.y - radius + half) / cell)), 0, size - 1),
+		"max_z": clampi(int(ceil((center.y + radius + half) / cell)), 0, size - 1),
+	}
+
+
+func _apply_road(data: Resource, settings: Dictionary, ctx) -> Dictionary:
+	var job := TerrainRoadJob.new(data, settings)
+	while not job.step(FRAME_BUDGET_USEC):
+		if ctx != null and ctx.is_expired():
+			return _error("terrain_tools.TIMEOUT", "Road generation exceeded its deadline")
+		await _next_frame()
+	return job.result()
+
+
+func _apply_road_sync(data: Resource, settings: Dictionary) -> Dictionary:
+	var job := TerrainRoadJob.new(data, settings)
+	while not job.step(1000000):
+		pass
+	return job.result()
+
+
+func _apply_road_legacy(data: Resource, settings: Dictionary, ctx) -> Dictionary:
+	var size: int = int(data.params.size)
+	var cell: float = float(data.params.cell_size)
+	var half: float = (size - 1) * cell * 0.5
+	var heights: PackedFloat32Array = data.final_heights()
+	var points: Array = settings.points
+	var cumulative: Array[float] = [0.0]
+	for index in range(1, points.size()):
+		var point: Vector2 = points[index]
+		cumulative.append(cumulative[-1] + point.distance_to(points[index - 1]))
+	var road_length: float = cumulative[-1]
+	var start_height: float = _sample_height(heights, size, cell, half, points[0])
+	var end_height: float = _sample_height(heights, size, cell, half, points[-1])
+	if settings.has("start_height"):
+		start_height = settings.start_height
+		end_height = settings.end_height
+	if absf(end_height - start_height) > road_length * float(settings.max_grade) + 0.0001:
+		return _error("terrain_tools.GRADE_INFEASIBLE", "Road endpoints cannot be connected within max_grade")
+	var profile: Array[float] = []
+	for index in points.size():
+		if settings.elevation_mode == "linear":
+			profile.append(lerpf(start_height, end_height, cumulative[index] / road_length))
+		else:
+			profile.append(_sample_height(heights, size, cell, half, points[index]))
+	profile[0] = start_height
+	profile[-1] = end_height
+	if settings.elevation_mode == "follow_smooth":
+		for _pass in int(settings.smoothing_passes):
+			var source := profile.duplicate()
+			for index in range(1, profile.size() - 1):
+				profile[index] = (source[index - 1] + source[index] * 2.0 + source[index + 1]) * 0.25
+		_limit_road_grade(profile, cumulative, float(settings.max_grade), start_height, end_height)
+	var changed := {}
+	var painted := {}
+	var half_width := float(settings.width) * 0.5
+	var shoulder := float(settings.shoulder_width)
+	var processed := 0
+	for index in heights.size():
+		if data.holes[index] != 0:
+			continue
+		var x: int = index % size
+		var z: int = int(index / size)
+		var position: Vector2 = Vector2(x * cell - half, z * cell - half)
+		var sample := _closest_path_sample(points, profile, position)
+		if sample.distance > half_width + shoulder:
+			continue
+		var weight := 1.0
+		if sample.distance > half_width:
+			if shoulder <= 0.0:
+				continue
+			weight = 1.0 - (sample.distance - half_width) / shoulder
+			if settings.falloff == "smooth":
+				weight = weight * weight * (3.0 - 2.0 * weight)
+		var updated: float = lerpf(heights[index], sample.height, weight)
+		if not is_equal_approx(updated, heights[index]):
+			data.edit_offsets[index] = updated - data.base_heights[index]
+			changed[index] = true
+		if settings.paint_road:
+			_paint_sample(data, index, "road", weight)
+			painted[index] = true
+		processed += 1
+		if processed % 2048 == 0:
+			if ctx != null and ctx.is_expired():
+				return _error("terrain_tools.TIMEOUT", "Road generation exceeded its deadline")
+			await _next_frame()
+	if changed.is_empty() and painted.is_empty():
+		return _error("terrain_tools.OUTSIDE_TERRAIN", "The road corridor does not intersect any unmasked terrain samples")
+	return {
+		"affected_vertices": changed.size(),
+		"painted_vertices": painted.size(),
+		"road_length": road_length,
+	}
+
+
+func _apply_paint(data: Resource, strokes: Array, ctx) -> Dictionary:
+	var job := TerrainPaintJob.new(data, strokes)
+	while not job.step(FRAME_BUDGET_USEC):
+		if ctx != null and ctx.is_expired():
+			return _error("terrain_tools.TIMEOUT", "Terrain painting exceeded its deadline")
+		await _next_frame()
+	return job.result()
+
+
+func _apply_paint_sync(data: Resource, strokes: Array) -> Dictionary:
+	var job := TerrainPaintJob.new(data, strokes)
+	while not job.step(1000000):
+		pass
+	return job.result()
+
+
+func _apply_paint_legacy(data: Resource, strokes: Array, ctx) -> Dictionary:
+	var size: int = int(data.params.size)
+	var cell: float = float(data.params.cell_size)
+	var half: float = (size - 1) * cell * 0.5
+	var changed := {}
+	var processed := 0
+	for stroke_value in strokes:
+		var stroke: Dictionary = stroke_value
+		for index in data.paint_coverage.size():
+			if data.holes[index] != 0:
+				continue
 			var x: int = index % size
-			var z := int(index / size)
-			var distance := Vector2(x * cell - half - area.center_x, z * cell - half - area.center_z).length()
-			if distance <= area.radius and data.holes[index] != value:
-				data.holes[index] = value
-				changed[index] = true
+			var z: int = int(index / size)
+			var position: Vector2 = Vector2(x * cell - half, z * cell - half)
+			var distance: float = _distance_to_polyline(stroke.points, position)
+			if distance <= stroke.radius:
+				var weight: float = 1.0 - distance / float(stroke.radius)
+				if stroke.falloff == "smooth":
+					weight = weight * weight * (3.0 - 2.0 * weight)
+				var amount: float = float(stroke.strength) * weight
+				if amount > 0.0:
+					_paint_sample(data, index, stroke.layer, amount)
+					changed[index] = true
 			processed += 1
 			if processed % 4096 == 0:
 				if ctx != null and ctx.is_expired():
-					return _error("terrain_tools.TIMEOUT", "Terrain hole generation exceeded its deadline")
+					return _error("terrain_tools.TIMEOUT", "Terrain painting exceeded its deadline")
 				await _next_frame()
 	return {"affected_vertices": changed.size()}
+
+
+func _paint_sample(data: Resource, index: int, layer: String, amount: float) -> void:
+	amount = clampf(amount, 0.0, 1.0)
+	if layer == "auto":
+		data.paint_coverage[index] = maxf(0.0, data.paint_coverage[index] - amount)
+		if is_zero_approx(data.paint_coverage[index]):
+			data.paint_weights[index] = Color(0.0, 0.0, 0.0, 0.0)
+		return
+	var target := _layer_weights(layer)
+	var current: Color = data.paint_weights[index]
+	if current.r + current.g + current.b + current.a <= 0.00001:
+		current = target
+	else:
+		current = _normalized_color_weights(current).lerp(target, amount)
+	data.paint_weights[index] = _normalized_color_weights(current)
+	data.paint_coverage[index] = lerpf(data.paint_coverage[index], 1.0, amount)
+
+
+func _layer_weights(layer: String) -> Color:
+	match layer:
+		"road":
+			return Color(0.0, 1.0, 0.0, 0.0)
+		"rock":
+			return Color(0.0, 0.0, 1.0, 0.0)
+		"snow":
+			return Color(0.0, 0.0, 0.0, 1.0)
+		_:
+			return Color(1.0, 0.0, 0.0, 0.0)
+
+
+func _normalized_color_weights(value: Color) -> Color:
+	var total := value.r + value.g + value.b + value.a
+	return value / total if total > 0.00001 else Color(1.0, 0.0, 0.0, 0.0)
+
+
+func _limit_road_grade(profile: Array[float], distances: Array[float], max_grade: float, start_height: float, end_height: float) -> void:
+	for _pass in 4:
+		profile[0] = start_height
+		for index in range(1, profile.size()):
+			var allowance := (distances[index] - distances[index - 1]) * max_grade
+			profile[index] = clampf(profile[index], profile[index - 1] - allowance, profile[index - 1] + allowance)
+		profile[-1] = end_height
+		for index in range(profile.size() - 2, -1, -1):
+			var allowance := (distances[index + 1] - distances[index]) * max_grade
+			profile[index] = clampf(profile[index], profile[index + 1] - allowance, profile[index + 1] + allowance)
+	profile[0] = start_height
+	profile[-1] = end_height
+
+
+func _closest_path_sample(points: Array, profile: Array[float], position: Vector2) -> Dictionary:
+	var best_distance := INF
+	var best_height := profile[0]
+	for index in range(points.size() - 1):
+		var start: Vector2 = points[index]
+		var finish: Vector2 = points[index + 1]
+		var segment: Vector2 = finish - start
+		var t: float = clampf((position - start).dot(segment) / segment.length_squared(), 0.0, 1.0)
+		var distance: float = position.distance_to(start + segment * t)
+		if distance < best_distance:
+			best_distance = distance
+			best_height = lerpf(profile[index], profile[index + 1], t)
+	return {"distance": best_distance, "height": best_height}
+
+
+func _distance_to_polyline(points: Array, position: Vector2) -> float:
+	if points.size() == 1:
+		return position.distance_to(points[0])
+	var profile: Array[float] = []
+	profile.resize(points.size())
+	return float(_closest_path_sample(points, profile, position).distance)
+
+
+func _sample_height(heights: PackedFloat32Array, size: int, cell: float, half: float, point: Vector2) -> float:
+	var grid_x := clampf((point.x + half) / cell, 0.0, size - 1.0)
+	var grid_z := clampf((point.y + half) / cell, 0.0, size - 1.0)
+	var x0 := int(floorf(grid_x))
+	var z0 := int(floorf(grid_z))
+	var x1 := mini(x0 + 1, size - 1)
+	var z1 := mini(z0 + 1, size - 1)
+	var tx := grid_x - x0
+	var tz := grid_z - z0
+	var top := lerpf(heights[z0 * size + x0], heights[z0 * size + x1], tx)
+	var bottom := lerpf(heights[z1 * size + x0], heights[z1 * size + x1], tx)
+	return lerpf(top, bottom, tz)
 
 
 func _normalized_params(params: Dictionary) -> Dictionary:
@@ -435,6 +868,21 @@ func _normalized_params(params: Dictionary) -> Dictionary:
 	var material_value = params.get("material_preset", "natural")
 	if not material_value is String or not MATERIAL_PRESETS.has(String(material_value)):
 		return _error("VALUE_OUT_OF_RANGE", "material_preset must be one of: %s" % ", ".join(MATERIAL_PRESETS))
+	var render_mode = params.get("render_mode", "bundled")
+	if not render_mode is String or not RENDER_MODES.has(String(render_mode)):
+		return _error("VALUE_OUT_OF_RANGE", "render_mode must be one of: %s" % ", ".join(RENDER_MODES))
+	var texture_scale := _positive_float(params.get("texture_scale", 0.2), "texture_scale")
+	if texture_scale.has("error"):
+		return texture_scale
+	var custom_textures := _normalized_custom_textures(params.get("custom_textures", {}))
+	if custom_textures.has("error"):
+		return custom_textures
+	var surface_profile = params.get("surface_profile", "mountain_valley")
+	if not surface_profile is String or not SURFACE_PROFILES.has(String(surface_profile)):
+		return _error("VALUE_OUT_OF_RANGE", "surface_profile must be one of: %s" % ", ".join(SURFACE_PROFILES))
+	var texture_variants := _normalized_texture_variants(params.get("texture_variants", {}))
+	if texture_variants.has("error"):
+		return texture_variants
 	return {"params": {
 		"size": size,
 		"cell_size": cell.value,
@@ -446,7 +894,168 @@ func _normalized_params(params: Dictionary) -> Dictionary:
 		"base_height": base_height.value,
 		"generate_collision": collision_value,
 		"material_preset": String(material_value),
+		"render_mode": String(render_mode),
+		"texture_scale": texture_scale.value,
+		"custom_textures": custom_textures.value,
+		"surface_profile": String(surface_profile),
+		"texture_variants": texture_variants.value,
 	}}
+
+
+func _normalized_texture_variants(value: Variant) -> Dictionary:
+	if not value is Dictionary:
+		return _error("INVALID_PARAMS", "texture_variants must be an object")
+	var unknown := _unknown_keys(value, ["ground", "dirt", "rock"])
+	if not unknown.is_empty():
+		return unknown
+	var normalized: Dictionary = {}
+	for family in value:
+		var variant = value[family]
+		if not _is_integer_value(variant) or int(variant) < 0 or int(variant) > 2:
+			return _error("VALUE_OUT_OF_RANGE", "texture_variants.%s must be an integer in 0..2" % family)
+		normalized[family] = int(variant)
+	return {"value": normalized}
+
+
+func _normalized_road(params: Dictionary) -> Dictionary:
+	var points := _normalized_points(params.get("points"), 2, 64, "points")
+	if points.has("error"):
+		return points
+	var width := _positive_float(params.get("width"), "width")
+	if width.has("error"):
+		return width
+	var shoulder := _nonnegative_float(params.get("shoulder_width", 2.0), "shoulder_width")
+	if shoulder.has("error"):
+		return shoulder
+	var elevation_mode = params.get("elevation_mode", "follow_smooth")
+	if not elevation_mode is String or not ["follow_smooth", "linear"].has(String(elevation_mode)):
+		return _error("VALUE_OUT_OF_RANGE", "elevation_mode must be follow_smooth or linear")
+	if params.has("start_height") != params.has("end_height"):
+		return _error("INVALID_PARAMS", "start_height and end_height must be provided together")
+	var max_grade := _positive_float(params.get("max_grade", 0.35), "max_grade")
+	if max_grade.has("error") or max_grade.value > 1.0:
+		return _error("VALUE_OUT_OF_RANGE", "max_grade must be greater than zero and at most 1")
+	var passes = params.get("smoothing_passes", 4)
+	if not _is_integer_value(passes) or int(passes) < 0 or int(passes) > 12:
+		return _error("VALUE_OUT_OF_RANGE", "smoothing_passes must be an integer in 0..12")
+	var paint_road = params.get("paint_road", true)
+	if not paint_road is bool:
+		return _error("INVALID_PARAMS", "paint_road must be a boolean")
+	var falloff = params.get("falloff", "smooth")
+	if not falloff is String or not FALLOFFS.has(String(falloff)):
+		return _error("VALUE_OUT_OF_RANGE", "falloff must be smooth or linear")
+	var settings := {
+		"points": points.value,
+		"width": width.value,
+		"shoulder_width": shoulder.value,
+		"elevation_mode": String(elevation_mode),
+		"max_grade": max_grade.value,
+		"smoothing_passes": int(passes),
+		"paint_road": paint_road,
+		"falloff": String(falloff),
+	}
+	if params.has("start_height"):
+		var start := _finite_float(params.start_height, "start_height")
+		var end := _finite_float(params.end_height, "end_height")
+		if start.has("error"):
+			return start
+		if end.has("error"):
+			return end
+		settings.start_height = start.value
+		settings.end_height = end.value
+	return {"settings": settings}
+
+
+func _normalized_paint_strokes(value: Variant) -> Dictionary:
+	if not value is Array or value.is_empty() or value.size() > 64:
+		return _error("INVALID_PARAMS", "strokes must be an array containing 1..64 entries")
+	var result: Array = []
+	for entry in value:
+		if not entry is Dictionary:
+			return _error("INVALID_PARAMS", "each paint stroke must be an object")
+		var unknown := _unknown_keys(entry, ["points", "radius", "layer", "strength", "falloff"])
+		if not unknown.is_empty():
+			return unknown
+		for required in ["points", "radius", "layer", "strength"]:
+			if not entry.has(required):
+				return _error("INVALID_PARAMS", "paint stroke.%s is required" % required)
+		var points := _normalized_points(entry.points, 1, 64, "paint stroke.points")
+		if points.has("error"):
+			return points
+		var radius := _positive_float(entry.radius, "paint stroke.radius")
+		if radius.has("error"):
+			return radius
+		if not entry.layer is String or not PAINT_LAYERS.has(String(entry.layer)):
+			return _error("VALUE_OUT_OF_RANGE", "paint stroke.layer must be one of: %s" % ", ".join(PAINT_LAYERS))
+		var strength := _positive_float(entry.strength, "paint stroke.strength")
+		if strength.has("error") or strength.value > 1.0:
+			return _error("VALUE_OUT_OF_RANGE", "paint stroke.strength must be greater than zero and at most 1")
+		var falloff = entry.get("falloff", "smooth")
+		if not falloff is String or not FALLOFFS.has(String(falloff)):
+			return _error("VALUE_OUT_OF_RANGE", "paint stroke.falloff must be smooth or linear")
+		var normalized_layer := String(entry.layer)
+		if normalized_layer == "dirt" or normalized_layer == "sand":
+			normalized_layer = "road"
+		result.append({
+			"points": points.value,
+			"radius": radius.value,
+			"layer": normalized_layer,
+			"strength": strength.value,
+			"falloff": String(falloff),
+		})
+	return {"items": result}
+
+
+func _normalized_points(value: Variant, minimum: int, maximum: int, field: String) -> Dictionary:
+	if not value is Array or value.size() < minimum or value.size() > maximum:
+		return _error("INVALID_PARAMS", "%s must contain %d..%d points" % [field, minimum, maximum])
+	var result: Array = []
+	for index in value.size():
+		var entry = value[index]
+		if not entry is Dictionary:
+			return _error("INVALID_PARAMS", "%s entries must be objects" % field)
+		var unknown := _unknown_keys(entry, ["x", "z"])
+		if not unknown.is_empty():
+			return unknown
+		if not entry.has("x") or not entry.has("z"):
+			return _error("INVALID_PARAMS", "%s entries require x and z" % field)
+		var x := _finite_float(entry.x, "%s.x" % field)
+		var z := _finite_float(entry.z, "%s.z" % field)
+		if x.has("error"):
+			return x
+		if z.has("error"):
+			return z
+		var point := Vector2(x.value, z.value)
+		if not result.is_empty() and point.is_equal_approx(result[-1]):
+			return _error("INVALID_PARAMS", "%s cannot contain consecutive duplicate points" % field)
+		result.append(point)
+	return {"value": result}
+
+
+func _normalized_custom_textures(value: Variant) -> Dictionary:
+	if not value is Dictionary:
+		return _error("INVALID_PARAMS", "custom_textures must be an object")
+	var normalized := {}
+	var unknown_layers := _unknown_keys(value, ["ground", "road", "rock", "snow"])
+	if not unknown_layers.is_empty():
+		return unknown_layers
+	for layer in value:
+		var maps = value[layer]
+		if not maps is Dictionary:
+			return _error("INVALID_PARAMS", "custom_textures.%s must be an object" % layer)
+		var unknown_maps := _unknown_keys(maps, ["albedo", "normal", "roughness"])
+		if not unknown_maps.is_empty():
+			return unknown_maps
+		var normalized_maps := {}
+		for texture_kind in maps:
+			var path = maps[texture_kind]
+			if not path is String or not String(path).begins_with("res://"):
+				return _error("INVALID_PARAMS", "custom texture paths must be res:// strings")
+			if not ResourceLoader.exists(String(path)) or not load(String(path)) is Texture2D:
+				return _error("terrain_tools.INVALID_TEXTURE", "Custom texture is missing or is not Texture2D: %s" % path)
+			normalized_maps[String(texture_kind)] = String(path)
+		normalized[String(layer)] = normalized_maps
+	return {"value": normalized}
 
 
 func _normalized_strokes(value: Variant) -> Dictionary:
@@ -521,10 +1130,52 @@ func _normalized_areas(value: Variant) -> Dictionary:
 	return {"items": result}
 
 
+func _normalized_landforms(value: Variant) -> Dictionary:
+	if not value is Array or value.is_empty() or value.size() > 32:
+		return _error("INVALID_PARAMS", "features must be an array containing 1..32 entries")
+	var result: Array = []
+	for entry in value:
+		if not entry is Dictionary:
+			return _error("INVALID_PARAMS", "each landform feature must be an object")
+		var unknown := _unknown_keys(entry, ["type", "points", "width", "falloff_width", "profile", "height", "roughness", "scale", "seed"])
+		if not unknown.is_empty():
+			return unknown
+		for required in ["type", "points", "width", "falloff_width", "profile", "height"]:
+			if not entry.has(required):
+				return _error("INVALID_PARAMS", "landform feature.%s is required" % required)
+		var kind = entry.type
+		if not kind is String or not ["ridge", "valley", "plateau"].has(String(kind)):
+			return _error("VALUE_OUT_OF_RANGE", "landform feature.type must be ridge, valley, or plateau")
+		var points := _normalized_points(entry.points, 1, 64, "landform feature.points")
+		if points.has("error"):
+			return points
+		var width := _positive_float(entry.width, "landform feature.width")
+		var falloff_width := _nonnegative_float(entry.falloff_width, "landform feature.falloff_width")
+		var height := _finite_float(entry.height, "landform feature.height")
+		var roughness := _nonnegative_float(entry.get("roughness", 0.0), "landform feature.roughness")
+		var scale := _positive_float(entry.get("scale", 1.0), "landform feature.scale")
+		for checked in [width, falloff_width, height, roughness, scale]:
+			if checked.has("error"):
+				return checked
+		var profile = entry.profile
+		if not profile is String or not ["smooth", "sharp", "terraced"].has(String(profile)):
+			return _error("VALUE_OUT_OF_RANGE", "landform feature.profile must be smooth, sharp, or terraced")
+		var seed = entry.get("seed", 1337)
+		if not _is_signed_seed(seed):
+			return _error("VALUE_OUT_OF_RANGE", "landform feature.seed must be a signed 32-bit integer")
+		result.append({
+			"type": String(kind), "points": points.value, "width": width.value,
+			"falloff_width": falloff_width.value, "profile": String(profile),
+			"height": height.value, "roughness": roughness.value,
+			"scale": scale.value, "seed": int(seed),
+		})
+	return {"items": result}
+
+
 func _normalized_erosion(params: Dictionary) -> Dictionary:
 	var algorithm = params.get("algorithm", "thermal")
-	if not algorithm is String or not ["thermal", "hydraulic"].has(String(algorithm)):
-		return _error("VALUE_OUT_OF_RANGE", "algorithm must be thermal or hydraulic")
+	if not algorithm is String or not ["thermal", "hydraulic", "thermal_natural", "hydraulic_natural"].has(String(algorithm)):
+		return _error("VALUE_OUT_OF_RANGE", "algorithm must be thermal, hydraulic, thermal_natural, or hydraulic_natural")
 	var iterations = params.get("iterations", 20)
 	if not _is_integer_value(iterations) or int(iterations) < 1 or int(iterations) > 200:
 		return _error("VALUE_OUT_OF_RANGE", "iterations must be an integer in 1..200")
@@ -536,7 +1187,57 @@ func _normalized_erosion(params: Dictionary) -> Dictionary:
 	var seed = params.get("seed", 1337)
 	if not _is_signed_seed(seed):
 		return _error("VALUE_OUT_OF_RANGE", "seed must be a signed 32-bit integer")
-	return {"settings": {"algorithm": String(algorithm), "iterations": int(iterations), "intensity": intensity.value, "seed": int(seed)}}
+	var preset = params.get("preset", "balanced")
+	if not preset is String or not ["soft", "balanced", "rugged"].has(String(preset)):
+		return _error("VALUE_OUT_OF_RANGE", "preset must be soft, balanced, or rugged")
+	var preset_values: Dictionary = {
+		"soft": {"rain": 0.55, "erosion": 0.22, "deposition": 0.42, "evaporation": 0.12, "talus": 0.22},
+		"balanced": {"rain": 0.8, "erosion": 0.4, "deposition": 0.3, "evaporation": 0.08, "talus": 0.15},
+		"rugged": {"rain": 1.0, "erosion": 0.58, "deposition": 0.2, "evaporation": 0.05, "talus": 0.1},
+	}[String(preset)]
+	var settings := {"algorithm": String(algorithm), "iterations": int(iterations), "intensity": intensity.value, "seed": int(seed), "preset": String(preset)}
+	for key in ["rain", "erosion", "deposition", "evaporation", "talus"]:
+		var checked := _nonnegative_float(params.get(key, preset_values[key]), key)
+		if checked.has("error"):
+			return checked
+		if checked.value > 1.0:
+			return _error("VALUE_OUT_OF_RANGE", "%s must be at most 1" % key)
+		settings[key] = checked.value
+	var preservation := _nonnegative_float(params.get("ridge_preservation", 0.0), "ridge_preservation")
+	if preservation.has("error") or preservation.value > 1.0:
+		return _error("VALUE_OUT_OF_RANGE", "ridge_preservation must be in 0..1")
+	settings.ridge_preservation = preservation.value
+	if params.has("region"):
+		var region = params.region
+		if not region is Dictionary:
+			return _error("INVALID_PARAMS", "region must be an object")
+		var unknown_region := _unknown_keys(region, ["center_x", "center_z", "points", "radius"])
+		if not unknown_region.is_empty():
+			return unknown_region
+		if not region.has("radius"):
+			return _error("INVALID_PARAMS", "region.radius is required")
+		var rr := _positive_float(region.radius, "region.radius")
+		if rr.has("error"):
+			return rr
+		var has_points: bool = region.has("points")
+		var has_center: bool = region.has("center_x") or region.has("center_z")
+		if has_points == has_center:
+			return _error("INVALID_PARAMS", "region must contain either points or center_x/center_z")
+		if has_points:
+			var points := _normalized_points(region.points, 2, 64, "region.points")
+			if points.has("error"):
+				return points
+			settings.region = {"points": points.value, "radius": rr.value}
+		else:
+			if not region.has("center_x") or not region.has("center_z"):
+				return _error("INVALID_PARAMS", "region.center_x and region.center_z are required together")
+			var rx := _finite_float(region.center_x, "region.center_x")
+			var rz := _finite_float(region.center_z, "region.center_z")
+			for checked in [rx, rz]:
+				if checked.has("error"):
+					return checked
+			settings.region = {"center_x": rx.value, "center_z": rz.value, "radius": rr.value}
+	return {"settings": settings}
 
 
 func _managed_target(params: Dictionary) -> Dictionary:
@@ -582,6 +1283,20 @@ func _managed_state(container: Node) -> Dictionary:
 		if checked.has("error"):
 			return _error("terrain_tools.UNSUPPORTED_FORMAT", "Legacy terrain parameters are invalid")
 		return {"format_version": version, "params": checked.params, "data": null}
+	if version == PREVIOUS_FORMAT_VERSION:
+		if not metadata.get("data") is Resource:
+			return _error("terrain_tools.UNSUPPORTED_FORMAT", "Terrain v2 metadata has no TerrainData resource")
+		var previous: Resource = metadata.data
+		if previous.get_script() != TerrainData:
+			return _error("terrain_tools.UNSUPPORTED_FORMAT", "Terrain v2 data is invalid or unsupported")
+		var previous_checked := _normalized_params(previous.params)
+		if previous_checked.has("error") or not _valid_previous_data(previous):
+			return _error("terrain_tools.UNSUPPORTED_FORMAT", "Terrain v2 parameters or arrays are invalid")
+		var upgraded := _upgrade_previous_data(previous, previous_checked.params)
+		var previous_height_error := _validate_height_data(upgraded)
+		if not previous_height_error.is_empty():
+			return _error("terrain_tools.UNSUPPORTED_FORMAT", "Terrain v2 heights are invalid")
+		return {"format_version": FORMAT_VERSION, "params": upgraded.params, "data": upgraded}
 	if version != FORMAT_VERSION or not metadata.get("data") is Resource:
 		return _error("terrain_tools.UNSUPPORTED_FORMAT", "Terrain metadata is missing or unsupported")
 	var data: Resource = metadata.data
@@ -594,6 +1309,31 @@ func _managed_state(container: Node) -> Dictionary:
 	if not height_error.is_empty():
 		return _error("terrain_tools.UNSUPPORTED_FORMAT", "TerrainData heights are invalid")
 	return {"format_version": version, "params": checked.params, "data": data}
+
+
+func _valid_previous_data(data: Resource) -> bool:
+	var size := int(data.params.get("size", 0))
+	var count := size * size
+	if not data.base_ready or size < MIN_SIZE:
+		return false
+	if data.base_heights.size() != count or data.edit_offsets.size() != count or data.holes.size() != count:
+		return false
+	for index in count:
+		if not is_finite(data.base_heights[index]) or not is_finite(data.edit_offsets[index]):
+			return false
+		if data.holes[index] != 0 and data.holes[index] != 1:
+			return false
+	return true
+
+
+func _upgrade_previous_data(previous: Resource, normalized_params: Dictionary) -> Resource:
+	var upgraded := TerrainData.new()
+	upgraded.initialize(normalized_params)
+	upgraded.base_heights = previous.base_heights.duplicate()
+	upgraded.edit_offsets = previous.edit_offsets.duplicate()
+	upgraded.holes = previous.holes.duplicate()
+	upgraded.base_ready = previous.base_ready
+	return upgraded
 
 
 func _managed_metadata(container: Node) -> Dictionary:
@@ -731,6 +1471,15 @@ func _positive_float(value: Variant, field: String) -> Dictionary:
 		return checked
 	if checked.value <= 0.0:
 		return _error("VALUE_OUT_OF_RANGE", "%s must be greater than zero" % field)
+	return checked
+
+
+func _nonnegative_float(value: Variant, field: String) -> Dictionary:
+	var checked := _finite_float(value, field)
+	if checked.has("error"):
+		return checked
+	if checked.value < 0.0:
+		return _error("VALUE_OUT_OF_RANGE", "%s must be zero or greater" % field)
 	return checked
 
 

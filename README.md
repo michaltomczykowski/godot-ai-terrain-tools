@@ -3,8 +3,14 @@
 ![Same prompt, two Godot AI workflows: Terrain Tools compared with stock Godot AI and CSG](docs/terrain-tools-comparison.png)
 
 Godot AI Terrain Tools is an editor-only heightmap authoring addon for Godot
-4. It exposes five promoted Godot AI custom tools for deterministic terrain
-creation, regeneration, batch sculpting, open-hole masks, and bounded erosion.
+4.7. It registers nine Godot AI custom tools for deterministic terrain
+creation, regeneration, batch sculpting, open-hole masks, bounded erosion,
+graded roads, semantic painting, nondestructive materials, and authored
+landforms. Eight high-frequency operations are promoted as first-class MCP
+tools; `terrain_material` remains available through `custom_manage` so the
+promotion cap never displaces sculpting or landform authoring. The precision
+upgrade also adds natural erosion modes, profile-aware surface classification,
+and optional 256×256 authoring.
 All changes are made to the edited scene as one undoable editor action.
 
 This is a lightweight heightmap authoring tool, not a runtime terrain system.
@@ -14,7 +20,7 @@ or volumetric terrain.
 
 ## Requirements
 
-- Godot 4.5 or newer.
+- Godot 4.7 or newer.
 - [Godot AI](https://github.com/hi-godot/godot-ai) 3.2.2 or newer.
 - An MCP client connected through the Godot AI plugin (for example Claude
   Code, Codex, or another MCP-compatible client).
@@ -31,18 +37,22 @@ Godot AI 3.2.2 is the minimum because it provides the published
    `demo/main.tscn`.
 2. Open the project in Godot and enable **Godot AI** and **Godot AI Terrain
    Tools** in **Project > Project Settings > Plugins**.
-3. Connect your MCP client using the Godot AI dock. The promoted tools appear
-   as `custom_terrain_create`, `custom_terrain_regenerate`,
-   `custom_terrain_sculpt`, `custom_terrain_holes`, and
-   `custom_terrain_erode`.
+3. Connect your MCP client using the Godot AI dock. The eight promoted tools
+   appear as `custom_terrain_create`, `custom_terrain_regenerate`,
+   `custom_terrain_sculpt`, `custom_terrain_holes`, `custom_terrain_erode`,
+   `custom_terrain_road`, `custom_terrain_paint`, and
+   `custom_terrain_landform`. All nine registered operations, including
+   `terrain_material`, are listed and invokable through `custom_manage`.
 
 The addon uses Godot AI's published custom-tool registry interface. It does
 not import Godot AI's private Python handlers or require a fork of Godot AI.
 
 ## Editor tools
 
-All five tools are promoted, require a writable editor, are deferred for
-larger builds, and are undoable. Only one terrain operation runs at a time;
+All nine tools are registered, require a writable editor, are deferred for
+larger builds, and are undoable. Eight are promoted as first-class MCP tools;
+`terrain_material` is intentionally routed through `custom_manage` because
+Godot AI caps promoted custom tools. Only one terrain operation runs at a time;
 while one is running, another request receives the retryable
 `terrain_tools.BUSY` error. `scene_file` is an optional edited-scene guard on
 every tool that targets a scene path.
@@ -53,7 +63,7 @@ every tool that targets a scene path.
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `size` | integer | `48` | Square grid width/depth, inclusive range `4..128`. |
+| `size` | integer | `48` | Square grid width/depth, inclusive range `4..256`. The default remains `48`; 256 is an opt-in maximum. |
 | `cell_size` | number | `2.0` | Positive distance between height samples. |
 | `seed` | integer | `1337` | Deterministic noise seed. |
 | `noise_type` | string | `simplex` | One of `simplex`, `simplex_smooth`, `perlin`, `ridged`, `value`. |
@@ -62,10 +72,35 @@ every tool that targets a scene path.
 | `height_scale` | number | `8.0` | Positive vertical amplitude. |
 | `base_height` | number | `0.0` | Finite vertical offset. |
 | `generate_collision` | boolean | `true` | Add the matching static heightfield collision body. |
-| `material_preset` | string | `natural` | One of `natural`, `desert`, `snow`, `volcanic`, `alien`; selects a built-in vertex-color palette. |
+| `material_preset` | string | `natural` | One of `natural`, `desert`, `snow`, `volcanic`, `alien`; selects built-in shader palette/tints. |
+| `render_mode` | string | `bundled` | One of `procedural`, `bundled`, or `custom`; selects how semantic terrain layers are rendered. New terrain uses the generated HD pack when available. |
+| `texture_scale` | number | `0.2` | World-space texture frequency used by bundled or custom textures. |
+| `surface_profile` | string | `legacy` | One of `mountain_valley`, `forest`, `arid`, or `legacy`; controls generated landform bias and automatic surface classification. |
+| `texture_variants` | object | omitted | Optional per-family zero-based variant indices for `ground`, `dirt`, and `rock`; an unknown or omitted index falls back to the selected profile. |
 
-The presets are palettes, not texture assets. They change the generated
-vertex colors while keeping the mesh deterministic.
+`bundled` mode uses the generated HD pack, with the compact 1K CC0 Poly Haven
+pack under `addons/godot_ai_terrain_tools/assets/textures/` as the
+compatibility fallback. `custom` mode accepts
+optional `res://` albedo, OpenGL-normal, and roughness overrides per semantic
+layer through `custom_textures`; an omitted map falls back to the matching bundled map. Material changes
+do not alter terrain heights, holes, topology, or collision.
+
+For bundled materials, generated HD albedo and roughness remain active while
+the detail-normal influence is deliberately restrained by default. This keeps
+surface relief without letting normal maps overpower the geometric normal on
+steep terrain.
+
+The nine HD generated variants are grouped as three rock, three ground/forest,
+and three dirt/sand materials. Each completed variant has albedo, height,
+OpenGL-normal, and roughness maps at 2048×2048. Asset generation is tracked
+separately from the code release; its generation provenance and checksums are
+recorded in
+[`addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_MANIFEST.json`](addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_MANIFEST.json),
+with the human-readable release record in
+[`addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_PROVENANCE.md`](addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_PROVENANCE.md).
+
+The presets are palettes, not texture assets. They change shader palette/tints
+while keeping terrain geometry and semantic paint deterministic.
 
 ### `custom_terrain_create`
 
@@ -97,6 +132,8 @@ Example MCP call:
     "octaves": 4,
     "height_scale": 10.0,
     "material_preset": "natural",
+    "surface_profile": "mountain_valley",
+    "texture_variants": {"ground": 0, "dirt": 1, "rock": 2},
     "generate_collision": true
   }
 }
@@ -116,11 +153,11 @@ Omitted common settings are read from the persisted `TerrainData` state.
 | --- | --- | --- | --- |
 | `path` | string | required | Managed terrain container scene path. |
 | `scene_file` | string | omitted | Optional edited-scene guard. |
-| `reset_modifications` | boolean | `false` | Clear sculpt offsets, erosion offsets, and hole masks before regeneration. |
+| `reset_modifications` | boolean | `false` | Clear sculpt offsets, erosion offsets, semantic paint, and hole masks before regeneration. |
 
 When `reset_modifications` is false, same-size regeneration preserves all
-sculpting, erosion, and holes. Setting it to true clears them, including when
-the grid size is unchanged. If a terrain has any modifications, changing
+sculpting, erosion, semantic paint, and holes. Setting it to true clears them,
+including when the grid size is unchanged. If a terrain has any modifications, changing
 `size` requires `reset_modifications: true`; otherwise the request fails with
 `terrain_tools.MODIFICATIONS_EXIST`. An unmodified terrain may change size
 without a reset. `reset_modifications` is a regenerate-only parameter and is
@@ -137,6 +174,145 @@ Example that changes the seed and palette while preserving same-size edits:
     "height_scale": 6.0,
     "material_preset": "desert",
     "generate_collision": false
+  }
+}
+```
+
+### `custom_terrain_road`
+
+Grades a smooth, path-based road directly into the managed heightmap. The
+operation samples the existing terrain at the endpoints (unless explicit
+heights are supplied), resamples and smooths the longitudinal profile,
+enforces `max_grade`, flattens the road corridor, and feathers the cut/fill
+through configurable shoulders. It clips paths at terrain boundaries and
+skips masked hole samples. Geometry, collision, and the default `road`
+semantic paint are committed as one undoable action.
+
+The request requires `path`, at least two terrain-local `{x, z}` points, and a
+positive `width`. Coordinates use the same terrain-local units as sculpt
+strokes. Optional fields are:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `points` | array | Ordered terrain-local `{x, z}` path points. |
+| `width` | positive number | Flat road corridor width. |
+| `elevation_mode` | string | `follow_smooth` (default) or `linear`. |
+| `start_height`, `end_height` | number | Optional endpoint elevations; omitted values sample the existing terrain. |
+| `max_grade` | positive number | Maximum allowed longitudinal grade; infeasible paths are rejected before mutation. |
+| `shoulder_width` | non-negative number | Width of the feathered cut/fill shoulder. |
+| `smoothing_passes` | integer | Number of longitudinal smoothing passes. |
+| `falloff` | string | `smooth` (default) or `linear` shoulder feathering. |
+| `paint_road` | boolean | Paint the corridor as `road` (default `true`) or leave semantic paint unchanged. |
+
+### `custom_terrain_paint`
+
+Applies `1..64` ordered semantic paint strokes and rebuilds the terrain once
+as one undoable action. A stroke with one point paints a circle; multiple
+points paint a continuous polyline. The request requires `path` and
+`strokes`.
+
+| Stroke field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `points` | array | required | One or more terrain-local `{x, z}` points. |
+| `radius` | positive number | required | Brush radius in terrain units. |
+| `strength` | number | required | Blend amount in `0..1`. |
+| `falloff` | string | `smooth` | `smooth` or `linear`. |
+| `layer` | string | required | `ground`, `road` (`dirt`/`sand` aliases), `rock`, `snow`, or `auto`. |
+
+`auto` removes manual paint in the affected area and restores the automatic
+height/slope classification. Strokes are evaluated in request order, so
+later paint can intentionally replace or blend earlier paint.
+
+### `terrain_material` via `custom_manage`
+
+Changes only the managed terrain's rendering mode and material settings. It
+requires `path` and accepts `render_mode` (`procedural`, `bundled`, or
+`custom`) plus `texture_scale`. In `custom` mode, pass optional
+`custom_textures` entries for `ground`, `dirt`/`sand`, `rock`, and `snow`, each with
+`albedo`, `normal`, and `roughness` `res://` paths. Missing maps use the
+bundled profile maps (with the legacy Poly Haven maps as fallback). The
+operation leaves heights, paint weights, topology, holes, and collision
+unchanged.
+
+This operation is registered under `terrain_material` but is not one of the
+eight promoted `custom_terrain_*` tools. Use `custom_manage` for discovery and
+invocation:
+
+Example:
+
+```json
+{
+  "name": "custom_manage",
+  "arguments": {
+    "op": "invoke",
+    "params": {
+      "tool_name": "terrain_material",
+      "params": {
+        "path": "/TerrainDemo/Valley",
+        "render_mode": "bundled",
+        "texture_scale": 0.2
+      }
+    }
+  }
+}
+```
+
+### `custom_terrain_landform`
+
+Applies `1..32` deterministic landform features and rebuilds the managed
+terrain once as one undoable action. Features operate on the existing
+`edit_offsets`, so the TerrainData v3 format, snapshots, holes, and collision
+alignment remain compatible. A feature with one point is circular; two or more
+points form a polyline ridge or valley spine. Processing is clipped to the
+feature bounds so a small feature does not scan the whole heightmap.
+
+| Feature field | Type | Description |
+| --- | --- | --- |
+| `type` | string | `ridge`, `valley`, or `plateau`. |
+| `points` | array | One or more terrain-local `{x, z}` points. |
+| `width` | positive number | Core radius for a circular feature or half-width around a polyline. |
+| `falloff_width` | non-negative number | Feather distance beyond the core. |
+| `profile` | string | `smooth`, `sharp`, or `terraced`. |
+| `height` | number | Signed ridge amplitude, or target elevation for `valley`/`plateau`. |
+| `roughness` | number | Deterministic detail amount, clamped to the documented range. |
+| `scale` | positive number | Detail scale in terrain-local units. |
+| `seed` | integer | Feature-local deterministic roughness seed. |
+
+For a polyline, the closest point on each segment determines the falloff and
+the longitudinal feature is blended continuously at segment joins. `sharp`
+preserves a more pronounced crest or cut, while `terraced` quantizes the
+profile into broad steps. Features are evaluated in request order, allowing a
+valley floor or plateau to be placed after a ridge chain.
+
+Example ridge chain and valley floor:
+
+```json
+{
+  "name": "custom_terrain_landform",
+  "arguments": {
+    "path": "/TerrainDemo/Valley",
+    "features": [
+      {
+        "type": "ridge",
+        "points": [{"x": -32, "z": -8}, {"x": -4, "z": 0}, {"x": 30, "z": 12}],
+        "width": 5.0,
+        "falloff_width": 4.0,
+        "profile": "sharp",
+        "height": 4.0,
+        "roughness": 0.25,
+        "scale": 7.0,
+        "seed": 17
+      },
+      {
+        "type": "valley",
+        "points": [{"x": -28, "z": 10}, {"x": 28, "z": 8}],
+        "width": 10.0,
+        "falloff_width": 8.0,
+        "profile": "smooth",
+        "height": -1.5,
+        "seed": 18
+      }
+    ]
   }
 }
 ```
@@ -207,14 +383,23 @@ and bakes the result into its edit offsets. It requires `path` and accepts:
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `algorithm` | string | `thermal` | `thermal` or `hydraulic`. |
+| `algorithm` | string | `thermal` | Compatibility modes are `thermal` and `hydraulic`; precision modes are `thermal_natural` and `hydraulic_natural`. |
 | `iterations` | integer | `20` | Inclusive range `1..200`. |
 | `intensity` | number | `0.5` | Positive strength, maximum `1.0`. |
 | `seed` | integer | `1337` | Deterministic hydraulic rainfall seed. |
+| `preset` | string | `balanced` | Natural modes only: `soft`, `balanced`, or `rugged`. |
+| `rain` | number | preset | Hydraulic natural rainfall multiplier. |
+| `erosion` / `deposition` | number | preset | Natural hydraulic transport rates. |
+| `evaporation` / `talus` | number | preset | Water loss and thermal stability controls. |
+| `region` | object | omitted | Optional circular `{center_x, center_z, radius}` or polyline corridor `{points, radius}` mask. |
+| `ridge_preservation` | number | `0.0` | `0..1` protection against erosion near steep/convex ridges. |
 
-Both algorithms skip masked hole samples and are deterministic for the same
-TerrainData and settings. They are bounded editor authoring operations, not a
-runtime water simulation.
+Both compatibility algorithms skip masked hole samples and remain unchanged.
+Natural modes use eight-neighbor, slope-aware thermal transfer and proportional
+multi-outflow hydraulic transport with deterministic rainfall, deposition,
+evaporation, and mass-conservation checks. Regions and ridge preservation are
+applied before any map mutation. All four modes are bounded editor authoring
+operations, not a runtime water simulation.
 
 Example:
 
@@ -231,14 +416,56 @@ Example:
 }
 ```
 
+Natural erosion example limited to a central basin while preserving the ridge
+crest:
+
+```json
+{
+  "name": "custom_terrain_erode",
+  "arguments": {
+    "path": "/TerrainDemo/Valley",
+    "algorithm": "hydraulic_natural",
+    "preset": "balanced",
+    "iterations": 32,
+    "intensity": 0.35,
+    "rain": 0.8,
+    "erosion": 0.4,
+    "deposition": 0.3,
+    "evaporation": 0.08,
+    "ridge_preservation": 0.75,
+    "region": {"center_x": 0.0, "center_z": 0.0, "radius": 24.0},
+    "seed": 101
+  }
+}
+```
+
+The same `region` field can select a polyline corridor instead of a circle. The
+`points` are ordered terrain-local `{x, z}` coordinates and `radius` is the
+corridor half-width:
+
+```json
+"region": {
+  "points": [
+    {"x": -28.0, "z": -8.0},
+    {"x": -4.0, "z": 0.0},
+    {"x": 26.0, "z": 12.0}
+  ],
+  "radius": 6.0
+}
+```
+
 ## Persistence and collision
 
-Each managed terrain stores a v2 `TerrainData` resource in its addon metadata.
+Each managed terrain stores a v3 `TerrainData` resource in its addon metadata.
 The resource is the source of truth for the deterministic `base_heights`,
-accumulated `edit_offsets`, `holes` mask, and persisted parameter snapshot.
+accumulated `edit_offsets`, `holes` mask, persistent four-layer semantic paint
+weights, manual-paint coverage, and persisted parameter snapshot.
 Because it is stored with the managed scene state, sculpt, hole, erosion, and
 regeneration changes survive reopening the scene and are captured by editor
-Undo/Redo as one replacement of the managed mesh and collision children.
+Undo/Redo as one replacement of the managed mesh, material, and collision
+children. Existing v1/v2 terrain data migrates to v3 on its first successful
+edit; migrated terrain starts with automatic height/slope classification and
+keeps its geometry and holes.
 
 Collision is a static `HeightMapShape3D` with one map sample per heightmap
 vertex. Its `map_width` and `map_depth` are the terrain `size`, and the
@@ -268,15 +495,16 @@ discovery and runner behavior.
 ## Scope and limitations
 
 This release is intentionally editor-only and limited to regular-grid
-heightmaps. Runtime editing, streaming, LOD, caves, interactive sculpting,
-textures, and vegetation are explicitly out of scope. More specifically, the
-addon has no live brush UI or runtime editing, no texture assets or painting,
-and no vegetation or foliage instancing. Arbitrary meshes and overhangs are
-also not supported.
+heightmaps. Runtime editing, streaming, LOD, caves, interactive sculpting, and
+vegetation are explicitly out of scope. Roads and painting are Godot AI
+authoring operations, not a live brush UI or runtime editing system. Arbitrary
+meshes and overhangs are also not supported.
 
 Generation and editing are bounded and serialized in the editor. Larger grids
-can take several frames, and a concurrent request must be retried. The addon
-targets the published Godot AI custom-tool API in Godot AI 3.2.2+ and does not
+can take several frames, and a concurrent request must be retried. 256×256 is
+an opt-in authoring maximum; its build, erosion, and collision work scales with
+the number of samples. The addon targets the published Godot AI custom-tool API
+in Godot AI 3.2.2+ and does not
 promise compatibility with older releases.
 
 ## Background and attribution
@@ -286,6 +514,18 @@ It is published here as a standalone addon in response to the maintainer's
 custom-tool resolution: [PR #856 maintainer comment](https://github.com/hi-godot/godot-ai/pull/856#issuecomment-5410618075).
 The registration follows Godot AI's documented [third-party custom-tool
 contract](https://github.com/hi-godot/godot-ai/blob/main/docs/plugin-architecture.md#custom-tools-third-party-addons),
-using promoted tool specs so clients can call the terrain operations directly.
+using eight promoted tool specs for frequent terrain operations. The ninth
+registered operation, `terrain_material`, remains reachable through
+`custom_manage` because of Godot AI's promotion cap.
+
+The legacy bundled material maps are CC0 assets from [Poly Haven](https://polyhaven.com/):
+[Forest Ground 01](https://polyhaven.com/a/forrest_ground_01),
+[Dirt](https://polyhaven.com/a/dirt),
+[Rock Surface](https://polyhaven.com/a/rock_surface), and
+[Snow 02](https://polyhaven.com/a/snow_02). See
+[`addons/godot_ai_terrain_tools/assets/README.md`](addons/godot_ai_terrain_tools/assets/README.md)
+for the exact legacy files, HD-generation contract, map conventions, and
+license details. Generated HD maps are independently authored and are shipped
+only when their manifest and checksum validation is complete.
 
 Released under the [MIT License](LICENSE).

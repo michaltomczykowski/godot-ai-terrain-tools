@@ -37,14 +37,8 @@ jobs:
           PY
 
   godot-tests:
-    name: Godot tests / ${{ matrix.godot-version }}
+    name: Godot tests / 4.7.0
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # 4.5 is the advertised compatibility floor. 4.7 is the primary
-        # version used by the pinned v3.2.2 upstream harness.
-        godot-version: ["4.5.0", "4.7.0"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,7 +53,7 @@ jobs:
 
       - uses: chickensoft-games/setup-godot@f166999204a4f2722c6fe042fbaa3b3ea0d9c789 # v2
         with:
-          version: ${{ matrix.godot-version }}
+          version: 4.7.0
           use-dotnet: false
 
       - name: Overlay addon and tests into upstream harness
@@ -71,28 +65,6 @@ jobs:
           if compgen -G 'tests/test_*.gd' > /dev/null; then
             cp tests/test_*.gd .ci/godot-ai/test_project/tests/
           fi
-          python3 - <<'PY'
-          from pathlib import Path
-
-          project = Path(".ci/godot-ai/test_project/project.godot")
-          text = project.read_text()
-          # Keep third-party plugins disabled for the upstream full-suite run.
-          # An upstream dispatcher test intentionally asserts Godot AI's exact
-          # internal handler count. The plugin-enabled job below exercises the
-          # addon through its promoted MCP surface in a separate editor.
-          # The upstream harness project is authored on its primary engine.
-          # Match its feature marker to the engine under test so the 4.5
-          # compatibility job does not inherit a future-project marker.
-          godot_version = "${{ matrix.godot-version }}"
-          feature = ".".join(godot_version.split(".")[:2])
-          text = text.replace(
-              'config/features=PackedStringArray("4.7")',
-              f'config/features=PackedStringArray("{feature}")',
-              1,
-          )
-          project.write_text(text)
-          PY
-
       - name: Install pinned Godot AI server
         shell: bash
         working-directory: .ci/godot-ai
@@ -128,13 +100,9 @@ jobs:
         run: tail -n 500 godot-editor.log || true
 
   plugin-smoke:
-    name: Plugin-enabled live smoke / ${{ matrix.godot-version }}
+    name: Plugin-enabled live smoke / 4.7.0
     needs: godot-tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        godot-version: ["4.5.0", "4.7.0"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -148,7 +116,7 @@ jobs:
 
       - uses: chickensoft-games/setup-godot@f166999204a4f2722c6fe042fbaa3b3ea0d9c789 # v2
         with:
-          version: ${{ matrix.godot-version }}
+          version: 4.7.0
           use-dotnet: false
 
       - name: Install Godot AI and overlay its addon

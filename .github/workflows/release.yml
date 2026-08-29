@@ -24,7 +24,7 @@ jobs:
           fi
 
       - name: Build addon-only archive
-        run: python3 scripts/package_release.py --output dist/godot-ai-terrain-tools.zip
+        run: python3 scripts/package_release.py --require-generated-assets --output dist/godot-ai-terrain-tools.zip
 
       - name: Generate checksum
         working-directory: dist
