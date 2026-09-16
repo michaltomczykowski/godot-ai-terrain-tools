@@ -28,11 +28,16 @@ Godot AI 4.1 is the minimum because it provides the published
 
 ## Installation
 
-1. Copy this repository's `addons/godot_ai_terrain_tools` directory into your
-   project's `addons/` directory. Install Godot AI's `addons/godot_ai`
-   directory beside it. To try the included scene directly, open this
-   repository as a Godot project; its root `project.godot` points at
-   `demo/main.tscn`.
+1. Install the addon either way:
+   - Download `godot-ai-terrain-tools.zip` from the [latest
+     release](https://github.com/michaltomczykowski/godot-ai-terrain-tools/releases/latest)
+     and extract it into your project root; the archive contains
+     `addons/godot_ai_terrain_tools/`.
+   - Or copy this repository's `addons/godot_ai_terrain_tools` directory into
+     your project's `addons/` directory.
+   Install Godot AI's `addons/godot_ai` directory beside it. To try the
+   included scene directly, open this repository as a Godot project; its root
+   `project.godot` points at `demo/main.tscn`.
 2. Open the project in Godot and enable **Godot AI** and **Godot AI Terrain
    Tools** in **Project > Project Settings > Plugins**.
 3. Connect your MCP client using the Godot AI dock. The eight promoted tools
@@ -44,6 +49,7 @@ Godot AI 4.1 is the minimum because it provides the published
 
 The addon uses Godot AI's published custom-tool registry interface. It does
 not import Godot AI's private Python handlers or require a fork of Godot AI.
+Release history and per-version notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Editor tools
 
