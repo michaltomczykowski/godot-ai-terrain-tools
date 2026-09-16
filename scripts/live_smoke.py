@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import time
 from contextlib import suppress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 
 ## Godot AI promotes at most eight addon tools. Material remains in the
@@ -37,12 +40,47 @@ REGISTERED_TERRAIN_TOOLS = {
 }
 
 
+def authorization_headers(server_url: str) -> dict[str, str]:
+    """Resolve the bearer capability Godot AI 4 requires on every HTTP request.
+
+    The server publishes the capability in a private record for its HTTP port;
+    a loopback URL reads that record directly, mirroring the upstream CI
+    helpers. Non-loopback targets must supply GODOT_AI_HTTP_CAPABILITY.
+    """
+    from godot_ai.transport.capability import (
+        HTTP_CAPABILITY_ENV,
+        read_capabilities,
+        validate_capability,
+    )
+
+    parsed = urlsplit(server_url)
+    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if loopback:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        record = read_capabilities(port)
+        if record is None:
+            raise RuntimeError(
+                f"missing Godot AI HTTP capability record for port {port}"
+            )
+        capability = record.http
+    else:
+        capability = validate_capability(os.environ.get(HTTP_CAPABILITY_ENV, ""))
+    return {"Authorization": f"Bearer {capability}"}
+
+
+def make_client(server_url: str) -> Client:
+    """Build an MCP client that carries Godot AI's HTTP bearer capability."""
+    return Client(
+        StreamableHttpTransport(url=server_url, headers=authorization_headers(server_url))
+    )
+
+
 async def connect_client(server_url: str, timeout: float) -> Client:
     """Connect after the MCP server becomes ready, or fail at the deadline."""
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
-        client = Client(server_url)
+        client = make_client(server_url)
         try:
             await client.__aenter__()
             return client
@@ -247,7 +285,7 @@ async def invoke_promoted_edit(client: Client, tool, path: str, mode: str) -> di
 
 
 async def invoke_busy(server_url: str, session_id: str, name: str):
-    async with Client(server_url) as client:
+    async with make_client(server_url) as client:
         try:
             result = await client.call_tool(
                 "custom_terrain_create",
@@ -486,8 +524,7 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
                     "tool_name": "terrain_material",
                     "params": {
                         "path": "/TerrainDemo/CITerrain",
-                        "render_mode": "bundled",
-                        "texture_scale": 0.2,
+                        "material_preset": "desert",
                     },
                 },
                 "session_id": session_id,
@@ -498,8 +535,8 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
             "error"
         ), material_data
         material_params = material_data.get("params", {})
-        assert material_params.get("render_mode") == "bundled", material_data
-        assert material_params.get("texture_scale") == 0.2, material_data
+        assert material_params.get("material_preset") == "desert", material_data
+        assert "render_mode" not in material_params, material_data
 
         fill_args = _operation_args(
             promoted["custom_terrain_holes"], "/TerrainDemo/CITerrain", "fill"
@@ -592,7 +629,7 @@ async def run(server_url: str, project_root: Path, timeout: float) -> None:
     )
     print(
         f"Live smoke passed: {suite_total} tests, 8 promoted/9 registered terrain tools, "
-        "landforms, road grading, semantic paint, bundled material, collision, "
+        "landforms, road grading, semantic paint, colour palettes, collision, "
         "persistence, compatibility/natural erosion, BUSY"
     )
 

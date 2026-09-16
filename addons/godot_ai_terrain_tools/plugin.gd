@@ -288,17 +288,13 @@ func _paint_spec() -> McpCustomToolSpec:
 func _material_spec() -> McpCustomToolSpec:
 	return _base_spec(
 		"terrain_material",
-		"Switch terrain between procedural, bundled texture, or custom texture rendering without changing its geometry or collision.",
+		"Switch a managed terrain's colour palette or surface-classification profile without changing its geometry or collision.",
 		&"material",
 		{
 			"type": "object", "additionalProperties": false, "required": ["path"],
 			"properties": _target_properties().merged({
-				"render_mode": {"type": "string", "enum": ["procedural", "bundled", "custom"]},
-				"texture_scale": {"type": "number", "exclusiveMinimum": 0},
 				"material_preset": {"type": "string", "enum": ["natural", "desert", "snow", "volcanic", "alien"]},
 				"surface_profile": {"type": "string", "enum": ["mountain_valley", "forest", "arid", "legacy"]},
-				"texture_variants": _texture_variants_property(),
-				"custom_textures": _custom_textures_property(),
 			}),
 		}
 	)
@@ -316,11 +312,7 @@ func _common_properties() -> Dictionary:
 		"base_height": {"type": "number", "default": 0.0},
 		"generate_collision": {"type": "boolean", "default": true},
 		"material_preset": {"type": "string", "enum": ["natural", "desert", "snow", "volcanic", "alien"], "default": "natural"},
-		"render_mode": {"type": "string", "enum": ["procedural", "bundled", "custom"], "default": "bundled"},
-		"texture_scale": {"type": "number", "exclusiveMinimum": 0, "default": 0.2},
-		"custom_textures": _custom_textures_property(),
 		"surface_profile": {"type": "string", "enum": ["mountain_valley", "forest", "arid", "legacy"], "default": "mountain_valley"},
-		"texture_variants": _texture_variants_property(),
 	}
 
 
@@ -328,30 +320,4 @@ func _target_properties() -> Dictionary:
 	return {
 		"path": {"type": "string", "description": "Scene path to a managed terrain Node3D."},
 		"scene_file": {"type": "string", "description": "Optional edited-scene guard (res://...tscn)."},
-	}
-
-
-func _custom_textures_property() -> Dictionary:
-	var map_properties := {
-		"albedo": {"type": "string", "description": "res:// path to a Texture2D resource."},
-		"normal": {"type": "string", "description": "res:// path to an OpenGL normal Texture2D resource."},
-		"roughness": {"type": "string", "description": "res:// path to a roughness Texture2D resource."},
-	}
-	var layer_property := {"type": "object", "additionalProperties": false, "properties": map_properties}
-	return {
-		"type": "object", "additionalProperties": false,
-		"properties": {
-			"ground": layer_property.duplicate(true),
-			"road": layer_property.duplicate(true),
-			"rock": layer_property.duplicate(true),
-			"snow": layer_property.duplicate(true),
-		},
-	}
-
-
-func _texture_variants_property() -> Dictionary:
-	var variant := {"type": "integer", "minimum": 0, "maximum": 2, "default": 0}
-	return {
-		"type": "object", "additionalProperties": false,
-		"properties": {"ground": variant.duplicate(), "dirt": variant.duplicate(), "rock": variant.duplicate()},
 	}

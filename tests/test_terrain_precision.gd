@@ -406,18 +406,14 @@ func test_natural_erosion_regions_support_circles_and_polyline_corridors() -> vo
 
 ## ----- material profiles, variants, aliases, and registration -----
 
-func test_material_surface_profiles_and_family_variants_are_normalized_and_published() -> void:
+func test_material_surface_profiles_are_normalized_and_published() -> void:
 	var probe := _normalized({
 		"size": 8,
 		"seed": 9105,
 		"surface_profile": "mountain_valley",
-		"texture_variants": {"ground": 1, "dirt": 2, "rock": 0},
 	})
 	assert_has_key(probe, "params")
 	assert_eq(probe.params.surface_profile, "mountain_valley")
-	assert_eq(probe.params.texture_variants.ground, 1)
-	assert_eq(probe.params.texture_variants.dirt, 2)
-	assert_eq(probe.params.texture_variants.rock, 0)
 	for profile in ["mountain_valley", "forest", "arid", "legacy"]:
 		var checked := _normalized({"size": 8, "surface_profile": profile})
 		assert_has_key(checked, "params")
@@ -425,18 +421,17 @@ func test_material_surface_profiles_and_family_variants_are_normalized_and_publi
 	for invalid in [
 		{"surface_profile": "volcanic"},
 		{"surface_profile": 7},
-		{"texture_variants": []},
-		{"texture_variants": {"water": 0}},
-		{"texture_variants": {"ground": -1}},
 	]:
-		assert_true(_is_error(_normalized(invalid)), "invalid profile/variant input must be rejected")
+		assert_true(_is_error(_normalized(invalid)), "invalid profile input must be rejected")
 	var plugin := track(TerrainPlugin.new())
 	var material: McpCustomToolSpec = plugin._material_spec()
 	assert_true(material != null)
 	var properties: Dictionary = material.params_schema.get("properties", {})
 	assert_has_key(properties, "surface_profile")
-	assert_has_key(properties, "texture_variants")
 	assert_eq((properties.surface_profile as Dictionary).enum, ["mountain_valley", "forest", "arid", "legacy"])
+	## The material is colour-only: no render-mode or texture knobs remain.
+	for removed in ["render_mode", "texture_scale", "custom_textures", "texture_variants"]:
+		assert_false(properties.has(removed), "material spec must not expose %s" % removed)
 
 
 func test_dirt_and_sand_paint_aliases_are_accepted_and_preserve_manual_override() -> void:

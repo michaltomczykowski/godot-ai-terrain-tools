@@ -2,6 +2,42 @@
 
 All notable changes to Godot AI Terrain Tools are documented here.
 
+## [1.4.0] - 2026-09-16
+
+### Changed
+
+- Ported to Godot AI 4.1. The addon still uses Godot AI's published
+  `McpToolRegistry` custom-tool interface; the pinned CI harness and the live
+  smoke now run against Godot AI v4.1.0, and the smoke authenticates with the
+  HTTP bearer capability Godot AI 4 requires on every request.
+- **Terrain is rendered with colours only.** The generated 2048×2048 HD
+  surface pack, the legacy Poly Haven maps, their manifests and checksums, and
+  the HD texture generator are removed. The shader blends one palette colour
+  per semantic layer (ground, road/dirt/sand, rock, snow) by the vertex weights
+  the build and paint passes write, plus a small deterministic grain.
+- `terrain_create`, `terrain_regenerate`, and `terrain_material` no longer
+  accept `render_mode`, `texture_scale`, `custom_textures`, or
+  `texture_variants`. `material_preset` (colour palette) and `surface_profile`
+  (automatic surface classification) remain, and the documented
+  `surface_profile` default is now the code default, `mountain_valley`.
+- Terrains saved before this release still load: their persisted render-mode
+  and texture keys are ignored, while heights, holes, paint, and collision are
+  preserved.
+
+### Removed
+
+- `addons/godot_ai_terrain_tools/assets/` (generated HD maps, previews, legacy
+  CC0 maps, and their manifests/checksums) and `scripts/generate_hd_textures.gd`.
+- `docs/terrain-tools-showcase.png` and `docs/terrain-tools-comparison.png`.
+
+### Verification
+
+- Material suites now assert palette colours on the shader material, the
+  absence of render-mode/texture properties in the published spec, and that
+  legacy texture keys in stored data are ignored.
+- The Godot suites and the promoted-tool live smoke run against Godot AI
+  v4.1.0.
+
 ## [1.3.0] - 2026-08-29
 
 ### Added

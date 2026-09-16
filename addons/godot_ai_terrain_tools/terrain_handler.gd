@@ -21,25 +21,21 @@ const MESH_CHILD := "TerrainMesh"
 const COLLISION_CHILD := "TerrainCollision"
 const META_KEY := &"godot_ai_terrain_tools"
 const MATERIAL_PRESETS := ["natural", "desert", "snow", "volcanic", "alien"]
-const RENDER_MODES := ["procedural", "bundled", "custom"]
 const SURFACE_PROFILES := ["mountain_valley", "forest", "arid", "legacy"]
 const PAINT_LAYERS := ["ground", "road", "dirt", "sand", "rock", "snow", "auto"]
 const PARAM_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
-	"height_scale", "base_height", "generate_collision", "material_preset",
-	"render_mode", "texture_scale", "custom_textures", "surface_profile", "texture_variants",
+	"height_scale", "base_height", "generate_collision", "material_preset", "surface_profile",
 ]
 ## Literal arrays retain Godot 4.5 constant-expression compatibility.
 const CREATE_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
-	"height_scale", "base_height", "generate_collision", "material_preset",
-	"render_mode", "texture_scale", "custom_textures", "surface_profile", "texture_variants",
+	"height_scale", "base_height", "generate_collision", "material_preset", "surface_profile",
 	"parent_path", "scene_file", "name", "session_id",
 ]
 const REGENERATE_KEYS := [
 	"size", "cell_size", "seed", "noise_type", "frequency", "octaves",
-	"height_scale", "base_height", "generate_collision", "material_preset",
-	"render_mode", "texture_scale", "custom_textures", "surface_profile", "texture_variants",
+	"height_scale", "base_height", "generate_collision", "material_preset", "surface_profile",
 	"reset_modifications", "path", "scene_file", "session_id",
 ]
 const EDIT_KEYS := ["path", "scene_file", "session_id", "strokes"]
@@ -48,7 +44,7 @@ const EROSION_KEYS := ["path", "scene_file", "session_id", "algorithm", "iterati
 const LANDFORM_KEYS := ["path", "scene_file", "session_id", "features"]
 const ROAD_KEYS := ["path", "scene_file", "session_id", "points", "width", "shoulder_width", "elevation_mode", "start_height", "end_height", "max_grade", "smoothing_passes", "paint_road", "falloff"]
 const PAINT_KEYS := ["path", "scene_file", "session_id", "strokes"]
-const MATERIAL_KEYS := ["path", "scene_file", "session_id", "render_mode", "texture_scale", "custom_textures", "material_preset", "surface_profile", "texture_variants"]
+const MATERIAL_KEYS := ["path", "scene_file", "session_id", "material_preset", "surface_profile"]
 const NOISE_TYPES := ["simplex", "simplex_smooth", "perlin", "ridged", "value"]
 const STROKE_MODES := ["raise", "lower", "smooth", "flatten", "noise"]
 const FALLOFFS := ["smooth", "linear"]
@@ -241,14 +237,14 @@ func material(params: Dictionary, ctx) -> Dictionary:
 	var busy := _busy_error()
 	if not busy.is_empty():
 		return busy
-	var request_error := _validate_request(params, MATERIAL_KEYS, ["path", "scene_file", "render_mode", "material_preset"])
+	var request_error := _validate_request(params, MATERIAL_KEYS, ["path", "scene_file", "material_preset"])
 	if not request_error.is_empty():
 		return request_error
 	var target := _managed_target(params)
 	if target.has("error"):
 		return target
 	var merged: Dictionary = target.state.params.duplicate(true)
-	for key in ["render_mode", "texture_scale", "custom_textures", "material_preset", "surface_profile", "texture_variants"]:
+	for key in ["material_preset"]:
 		if params.has(key):
 			merged[key] = params[key]
 	var checked := _normalized_params(merged)
@@ -868,21 +864,9 @@ func _normalized_params(params: Dictionary) -> Dictionary:
 	var material_value = params.get("material_preset", "natural")
 	if not material_value is String or not MATERIAL_PRESETS.has(String(material_value)):
 		return _error("VALUE_OUT_OF_RANGE", "material_preset must be one of: %s" % ", ".join(MATERIAL_PRESETS))
-	var render_mode = params.get("render_mode", "bundled")
-	if not render_mode is String or not RENDER_MODES.has(String(render_mode)):
-		return _error("VALUE_OUT_OF_RANGE", "render_mode must be one of: %s" % ", ".join(RENDER_MODES))
-	var texture_scale := _positive_float(params.get("texture_scale", 0.2), "texture_scale")
-	if texture_scale.has("error"):
-		return texture_scale
-	var custom_textures := _normalized_custom_textures(params.get("custom_textures", {}))
-	if custom_textures.has("error"):
-		return custom_textures
 	var surface_profile = params.get("surface_profile", "mountain_valley")
 	if not surface_profile is String or not SURFACE_PROFILES.has(String(surface_profile)):
 		return _error("VALUE_OUT_OF_RANGE", "surface_profile must be one of: %s" % ", ".join(SURFACE_PROFILES))
-	var texture_variants := _normalized_texture_variants(params.get("texture_variants", {}))
-	if texture_variants.has("error"):
-		return texture_variants
 	return {"params": {
 		"size": size,
 		"cell_size": cell.value,
@@ -894,27 +878,8 @@ func _normalized_params(params: Dictionary) -> Dictionary:
 		"base_height": base_height.value,
 		"generate_collision": collision_value,
 		"material_preset": String(material_value),
-		"render_mode": String(render_mode),
-		"texture_scale": texture_scale.value,
-		"custom_textures": custom_textures.value,
 		"surface_profile": String(surface_profile),
-		"texture_variants": texture_variants.value,
 	}}
-
-
-func _normalized_texture_variants(value: Variant) -> Dictionary:
-	if not value is Dictionary:
-		return _error("INVALID_PARAMS", "texture_variants must be an object")
-	var unknown := _unknown_keys(value, ["ground", "dirt", "rock"])
-	if not unknown.is_empty():
-		return unknown
-	var normalized: Dictionary = {}
-	for family in value:
-		var variant = value[family]
-		if not _is_integer_value(variant) or int(variant) < 0 or int(variant) > 2:
-			return _error("VALUE_OUT_OF_RANGE", "texture_variants.%s must be an integer in 0..2" % family)
-		normalized[family] = int(variant)
-	return {"value": normalized}
 
 
 func _normalized_road(params: Dictionary) -> Dictionary:
@@ -1030,32 +995,6 @@ func _normalized_points(value: Variant, minimum: int, maximum: int, field: Strin
 			return _error("INVALID_PARAMS", "%s cannot contain consecutive duplicate points" % field)
 		result.append(point)
 	return {"value": result}
-
-
-func _normalized_custom_textures(value: Variant) -> Dictionary:
-	if not value is Dictionary:
-		return _error("INVALID_PARAMS", "custom_textures must be an object")
-	var normalized := {}
-	var unknown_layers := _unknown_keys(value, ["ground", "road", "rock", "snow"])
-	if not unknown_layers.is_empty():
-		return unknown_layers
-	for layer in value:
-		var maps = value[layer]
-		if not maps is Dictionary:
-			return _error("INVALID_PARAMS", "custom_textures.%s must be an object" % layer)
-		var unknown_maps := _unknown_keys(maps, ["albedo", "normal", "roughness"])
-		if not unknown_maps.is_empty():
-			return unknown_maps
-		var normalized_maps := {}
-		for texture_kind in maps:
-			var path = maps[texture_kind]
-			if not path is String or not String(path).begins_with("res://"):
-				return _error("INVALID_PARAMS", "custom texture paths must be res:// strings")
-			if not ResourceLoader.exists(String(path)) or not load(String(path)) is Texture2D:
-				return _error("terrain_tools.INVALID_TEXTURE", "Custom texture is missing or is not Texture2D: %s" % path)
-			normalized_maps[String(texture_kind)] = String(path)
-		normalized[String(layer)] = normalized_maps
-	return {"value": normalized}
 
 
 func _normalized_strokes(value: Variant) -> Dictionary:

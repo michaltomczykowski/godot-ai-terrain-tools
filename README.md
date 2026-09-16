@@ -1,16 +1,14 @@
 # Godot AI Terrain Tools
 
-![Godot AI Terrain Tools precision landforms, natural erosion, HD surfaces, and semantic painting](docs/terrain-tools-showcase.png)
-
 Godot AI Terrain Tools is an editor-only heightmap authoring addon for Godot
 4.7. It registers nine Godot AI custom tools for deterministic terrain
 creation, regeneration, batch sculpting, open-hole masks, bounded erosion,
-graded roads, semantic painting, nondestructive materials, and authored
-landforms. Eight high-frequency operations are promoted as first-class MCP
-tools; `terrain_material` remains available through `custom_manage` so the
-promotion cap never displaces sculpting or landform authoring. The precision
-upgrade also adds natural erosion modes, profile-aware surface classification,
-and optional 256×256 authoring.
+graded roads, semantic painting, colour palettes, and authored landforms.
+Eight high-frequency operations are promoted as first-class MCP tools;
+`terrain_material` remains available through `custom_manage` so the promotion
+cap never displaces sculpting or landform authoring. Terrain is rendered with
+per-layer palette colours only; the addon also adds natural erosion modes,
+profile-aware surface classification, and optional 256×256 authoring.
 All changes are made to the edited scene as one undoable editor action.
 
 This is a lightweight heightmap authoring tool, not a runtime terrain system.
@@ -21,11 +19,11 @@ or volumetric terrain.
 ## Requirements
 
 - Godot 4.7 or newer.
-- [Godot AI](https://github.com/hi-godot/godot-ai) 3.2.2 or newer.
+- [Godot AI](https://github.com/hi-godot/godot-ai) 4.1 or newer.
 - An MCP client connected through the Godot AI plugin (for example Claude
   Code, Codex, or another MCP-compatible client).
 
-Godot AI 3.2.2 is the minimum because it provides the published
+Godot AI 4.1 is the minimum because it provides the published
 `McpToolRegistry` custom-tool interface used by this addon.
 
 ## Installation
@@ -72,35 +70,17 @@ every tool that targets a scene path.
 | `height_scale` | number | `8.0` | Positive vertical amplitude. |
 | `base_height` | number | `0.0` | Finite vertical offset. |
 | `generate_collision` | boolean | `true` | Add the matching static heightfield collision body. |
-| `material_preset` | string | `natural` | One of `natural`, `desert`, `snow`, `volcanic`, `alien`; selects built-in shader palette/tints. |
-| `render_mode` | string | `bundled` | One of `procedural`, `bundled`, or `custom`; selects how semantic terrain layers are rendered. New terrain uses the generated HD pack when available. |
-| `texture_scale` | number | `0.2` | World-space texture frequency used by bundled or custom textures. |
-| `surface_profile` | string | `legacy` | One of `mountain_valley`, `forest`, `arid`, or `legacy`; controls generated landform bias and automatic surface classification. |
-| `texture_variants` | object | omitted | Optional per-family zero-based variant indices for `ground`, `dirt`, and `rock`; an unknown or omitted index falls back to the selected profile. |
+| `material_preset` | string | `natural` | One of `natural`, `desert`, `snow`, `volcanic`, `alien`; selects the built-in colour palette. |
+| `surface_profile` | string | `mountain_valley` | One of `mountain_valley`, `forest`, `arid`, or `legacy`; controls automatic surface classification (rock, snow, and dirt bias) for the generated palette weights. |
 
-`bundled` mode uses the generated HD pack, with the compact 1K CC0 Poly Haven
-pack under `addons/godot_ai_terrain_tools/assets/textures/` as the
-compatibility fallback. `custom` mode accepts
-optional `res://` albedo, OpenGL-normal, and roughness overrides per semantic
-layer through `custom_textures`; an omitted map falls back to the matching bundled map. Material changes
-do not alter terrain heights, holes, topology, or collision.
+Terrain is rendered with colours only. The shader blends one palette colour per
+semantic layer (ground, road/dirt/sand, rock, snow) by the vertex weights the
+build and paint passes write, plus a small deterministic grain so large flat
+areas do not read as untextured plastic. No textures are loaded or bundled, so
+material changes never alter terrain heights, holes, topology, or collision.
 
-For bundled materials, generated HD albedo and roughness remain active while
-the detail-normal influence is deliberately restrained by default. This keeps
-surface relief without letting normal maps overpower the geometric normal on
-steep terrain.
-
-The nine HD generated variants are grouped as three rock, three ground/forest,
-and three dirt/sand materials. Each completed variant has albedo, height,
-OpenGL-normal, and roughness maps at 2048×2048. Asset generation is tracked
-separately from the code release; its generation provenance and checksums are
-recorded in
-[`addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_MANIFEST.json`](addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_MANIFEST.json),
-with the human-readable release record in
-[`addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_PROVENANCE.md`](addons/godot_ai_terrain_tools/assets/GENERATED_ASSET_PROVENANCE.md).
-
-The presets are palettes, not texture assets. They change shader palette/tints
-while keeping terrain geometry and semantic paint deterministic.
+The presets are colour palettes, not texture assets. They change the shader
+colours while keeping terrain geometry and semantic paint deterministic.
 
 ### `custom_terrain_create`
 
@@ -133,7 +113,6 @@ Example MCP call:
     "height_scale": 10.0,
     "material_preset": "natural",
     "surface_profile": "mountain_valley",
-    "texture_variants": {"ground": 0, "dirt": 1, "rock": 2},
     "generate_collision": true
   }
 }
@@ -225,14 +204,11 @@ later paint can intentionally replace or blend earlier paint.
 
 ### `terrain_material` via `custom_manage`
 
-Changes only the managed terrain's rendering mode and material settings. It
-requires `path` and accepts `render_mode` (`procedural`, `bundled`, or
-`custom`) plus `texture_scale`. In `custom` mode, pass optional
-`custom_textures` entries for `ground`, `dirt`/`sand`, `rock`, and `snow`, each with
-`albedo`, `normal`, and `roughness` `res://` paths. Missing maps use the
-bundled profile maps (with the legacy Poly Haven maps as fallback). The
-operation leaves heights, paint weights, topology, holes, and collision
-unchanged.
+Changes only the managed terrain's colour palette and surface-classification
+profile. It requires `path` and accepts `material_preset` (`natural`, `desert`,
+`snow`, `volcanic`, or `alien`) and `surface_profile` (`mountain_valley`,
+`forest`, `arid`, or `legacy`). The operation leaves heights, paint weights,
+topology, holes, and collision unchanged.
 
 This operation is registered under `terrain_material` but is not one of the
 eight promoted `custom_terrain_*` tools. Use `custom_manage` for discovery and
@@ -249,8 +225,7 @@ Example:
       "tool_name": "terrain_material",
       "params": {
         "path": "/TerrainDemo/Valley",
-        "render_mode": "bundled",
-        "texture_scale": 0.2
+        "material_preset": "desert"
       }
     }
   }
@@ -465,7 +440,8 @@ regeneration changes survive reopening the scene and are captured by editor
 Undo/Redo as one replacement of the managed mesh, material, and collision
 children. Existing v1/v2 terrain data migrates to v3 on its first successful
 edit; migrated terrain starts with automatic height/slope classification and
-keeps its geometry and holes.
+keeps its geometry and holes. Terrains saved before the colour-only change
+still load: their persisted render-mode and texture keys are ignored.
 
 Collision is a static `HeightMapShape3D` with one map sample per heightmap
 vertex. Its `map_width` and `map_depth` are the terrain `size`, and the
@@ -504,7 +480,7 @@ Generation and editing are bounded and serialized in the editor. Larger grids
 can take several frames, and a concurrent request must be retried. 256×256 is
 an opt-in authoring maximum; its build, erosion, and collision work scales with
 the number of samples. The addon targets the published Godot AI custom-tool API
-in Godot AI 3.2.2+ and does not
+in Godot AI 4.1+ and does not
 promise compatibility with older releases.
 
 ## Background and attribution
@@ -518,14 +494,7 @@ using eight promoted tool specs for frequent terrain operations. The ninth
 registered operation, `terrain_material`, remains reachable through
 `custom_manage` because of Godot AI's promotion cap.
 
-The legacy bundled material maps are CC0 assets from [Poly Haven](https://polyhaven.com/):
-[Forest Ground 01](https://polyhaven.com/a/forrest_ground_01),
-[Dirt](https://polyhaven.com/a/dirt),
-[Rock Surface](https://polyhaven.com/a/rock_surface), and
-[Snow 02](https://polyhaven.com/a/snow_02). See
-[`addons/godot_ai_terrain_tools/assets/README.md`](addons/godot_ai_terrain_tools/assets/README.md)
-for the exact legacy files, HD-generation contract, map conventions, and
-license details. Generated HD maps are independently authored and are shipped
-only when their manifest and checksum validation is complete.
+Terrain is rendered with per-layer palette colours only; the addon bundles no
+textures.
 
 Released under the [MIT License](LICENSE).

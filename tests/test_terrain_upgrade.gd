@@ -126,7 +126,7 @@ func test_v3_data_paint_arrays_survive_packed_scene_save_and_load() -> void:
 	container.name = "Terrain"
 	scene_root.add_child(container)
 	container.owner = scene_root
-	var data := _new_data({"size": 6, "seed": 7003, "render_mode": "procedural"})
+	var data := _new_data({"size": 6, "seed": 7003})
 	_build(data)
 	data.paint_weights[7] = Color(0.0, 1.0, 0.0, 0.0)
 	data.paint_coverage[7] = 1.0
@@ -391,18 +391,15 @@ func test_paint_skips_masked_holes() -> void:
 
 ## ----- material modes and promoted public schemas -----
 
-func test_material_modes_normalize_and_keep_geometry_unchanged() -> void:
-	var baseline := _new_data({"size": 8, "seed": 7030, "render_mode": "procedural"})
+func test_material_palettes_normalize_and_keep_geometry_unchanged() -> void:
+	var baseline := _new_data({"size": 8, "seed": 7030, "material_preset": "natural"})
 	var baseline_built := _build(baseline)
 	var baseline_arrays := _mesh_arrays(baseline_built)
-	for mode in ["procedural", "bundled", "custom"]:
-		var options: Dictionary = {"size": 8, "seed": 7030, "render_mode": mode, "texture_scale": 6.0}
-		if mode == "custom":
-			options.custom_textures = {}
+	for preset in ["natural", "desert", "snow", "volcanic", "alien"]:
+		var options: Dictionary = {"size": 8, "seed": 7030, "material_preset": preset}
 		var checked := _normalized(options)
 		assert_has_key(checked, "params")
-		assert_eq(checked.params.render_mode, mode)
-		assert_eq(checked.params.texture_scale, 6.0)
+		assert_eq(checked.params.material_preset, preset)
 		var data := _new_data(options)
 		var built := _build(data)
 		var arrays := _mesh_arrays(built)
@@ -413,23 +410,21 @@ func test_material_modes_normalize_and_keep_geometry_unchanged() -> void:
 			assert_true(absf(color.r + color.g + color.b + color.a - 1.0) < 0.01,
 				"semantic vertex weights must remain normalized")
 		assert_eq(arrays[Mesh.ARRAY_VERTEX], baseline_arrays[Mesh.ARRAY_VERTEX],
-			"material mode must not alter terrain geometry")
+			"material preset must not alter terrain geometry")
 		assert_eq(arrays[Mesh.ARRAY_INDEX], baseline_arrays[Mesh.ARRAY_INDEX],
-			"material mode must not alter terrain topology")
+			"material preset must not alter terrain topology")
 		var material := (built.mesh as Mesh).surface_get_material(0)
 		assert_true(material is ShaderMaterial,
-			"terrain material modes must use the semantic shader material")
-		assert_true((material as ShaderMaterial).shader != null)
-		if mode != "procedural":
-			for layer in ["ground", "road", "rock", "snow"]:
-				for map_name in ["albedo", "normal", "roughness"]:
-					var texture: Variant = (material as ShaderMaterial).get_shader_parameter("%s_%s" % [layer, map_name])
-					assert_true(texture is Texture2D,
-						"bundled/custom mode must resolve %s %s texture" % [layer, map_name])
+			"terrain must use the semantic colour shader material")
+		var shader_material := material as ShaderMaterial
+		assert_true(shader_material.shader != null)
+		for layer_color in ["ground_color", "road_color", "rock_color", "snow_color"]:
+			assert_true(shader_material.get_shader_parameter(layer_color) is Color,
+				"colour-only material must publish %s" % layer_color)
 
 
 func test_material_only_data_replacement_preserves_heights_holes_and_paint() -> void:
-	var original := _new_data({"size": 8, "seed": 7031, "render_mode": "procedural"})
+	var original := _new_data({"size": 8, "seed": 7031, "material_preset": "natural"})
 	_build(original)
 	original.edit_offsets[9] = 1.25
 	original.holes[18] = 1
@@ -438,12 +433,10 @@ func test_material_only_data_replacement_preserves_heights_holes_and_paint() -> 
 	var changed: Dictionary = _normalized({
 		"size": 8,
 		"seed": 7031,
-		"render_mode": "bundled",
-		"texture_scale": 3.0,
+		"material_preset": "desert",
 	}).params
 	var updated: TerrainData = _handler._regenerated_material_data(changed, original) as TerrainData
-	assert_eq(updated.params.render_mode, "bundled")
-	assert_eq(updated.params.texture_scale, 3.0)
+	assert_eq(updated.params.material_preset, "desert")
 	assert_eq(updated.base_heights, original.base_heights)
 	assert_eq(updated.edit_offsets, original.edit_offsets)
 	assert_eq(updated.holes, original.holes)
@@ -451,16 +444,24 @@ func test_material_only_data_replacement_preserves_heights_holes_and_paint() -> 
 	assert_eq(updated.paint_coverage, original.paint_coverage)
 
 
-func test_material_normalization_rejects_bad_mode_scale_and_custom_paths() -> void:
+func test_material_normalization_rejects_unknown_preset_and_ignores_legacy_keys() -> void:
 	for invalid in [
-		{"render_mode": "vertex"},
-		{"render_mode": 3},
-		{"texture_scale": 0.0},
-		{"texture_scale": INF},
-		{"render_mode": "custom", "custom_textures": "bad"},
-		{"render_mode": "custom", "custom_textures": {"road": {"albedo": "user://not-res"}}},
+		{"material_preset": "vertex"},
+		{"material_preset": 3},
 	]:
 		assert_is_error(_normalized(invalid))
+	## Terrains saved before the colour-only change still carry render-mode and
+	## texture keys; normalization must ignore them rather than fail a rebuild.
+	var legacy := _normalized({
+		"size": 8,
+		"render_mode": "bundled",
+		"texture_scale": 0.2,
+		"texture_variants": {"ground": 1},
+		"custom_textures": {"road": {"albedo": "res://missing.png"}},
+	})
+	assert_has_key(legacy, "params")
+	assert_false(legacy.params.has("render_mode"))
+	assert_false(legacy.params.has("texture_variants"))
 
 
 func test_road_paint_and_material_specs_publish_complete_contracts() -> void:
@@ -486,7 +487,13 @@ func test_road_paint_and_material_specs_publish_complete_contracts() -> void:
 	var paint_properties := paint_item.get("properties", {}) as Dictionary
 	assert_eq((paint_properties.get("layer", {}) as Dictionary).enum, ["ground", "road", "dirt", "sand", "rock", "snow", "auto"])
 	assert_eq((paint_properties.get("falloff", {}) as Dictionary).enum, ["smooth", "linear"])
-	var material_mode := _schema_property(material, "render_mode")
-	assert_eq(material_mode.enum, ["procedural", "bundled", "custom"])
-	assert_has_key(material.params_schema.properties, "texture_scale")
-	assert_has_key(material.params_schema.properties, "custom_textures")
+	var material_preset := _schema_property(material, "material_preset")
+	assert_eq(material_preset.enum, ["natural", "desert", "snow", "volcanic", "alien"])
+	var material_profile := _schema_property(material, "surface_profile")
+	assert_eq(material_profile.enum, ["mountain_valley", "forest", "arid", "legacy"])
+	## Colour-only: no render-mode or texture properties are advertised.
+	for removed in ["render_mode", "texture_scale", "custom_textures", "texture_variants"]:
+		assert_false(
+			(material.params_schema.properties as Dictionary).has(removed),
+			"material spec must not expose %s" % removed
+		)

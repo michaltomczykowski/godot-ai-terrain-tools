@@ -8,25 +8,6 @@ extends RefCounted
 const TerrainData := preload("res://addons/godot_ai_terrain_tools/terrain_data.gd")
 const TERRAIN_SHADER := preload("res://addons/godot_ai_terrain_tools/terrain_material.gdshader")
 
-const TEXTURE_ROOT := "res://addons/godot_ai_terrain_tools/assets/textures/"
-const BUNDLED_TEXTURES := {
-	"ground": {"albedo": "ground/albedo.jpg", "normal": "ground/normal_opengl.jpg", "roughness": "ground/roughness.jpg"},
-	"road": {"albedo": "road/albedo.jpg", "normal": "road/normal_opengl.jpg", "roughness": "road/roughness.jpg"},
-	"rock": {"albedo": "rock/albedo.jpg", "normal": "rock/normal_opengl.jpg", "roughness": "rock/roughness.jpg"},
-	"snow": {"albedo": "snow/albedo.jpg", "normal": "snow/normal_opengl.jpg", "roughness": "snow/roughness.jpg"},
-}
-const GENERATED_ROOT := "res://addons/godot_ai_terrain_tools/assets/generated/"
-const GENERATED_VARIANTS := {
-	"ground": ["meadow_grass", "mossy_forest_floor", "dry_mountain_grass"],
-	"dirt": ["compact_earth", "pale_sand", "gravelly_loam"],
-	"rock": ["stratified_dark_rock", "weathered_granite", "rugged_limestone"],
-}
-const PROFILE_VARIANTS := {
-	"mountain_valley": {"ground": 0, "dirt": 0, "rock": 0},
-	"forest": {"ground": 1, "dirt": 2, "rock": 1},
-	"arid": {"ground": 2, "dirt": 1, "rock": 2},
-}
-
 const NOISE_TYPES := {
 	"simplex": FastNoiseLite.TYPE_SIMPLEX,
 	"simplex_smooth": FastNoiseLite.TYPE_SIMPLEX_SMOOTH,
@@ -315,42 +296,16 @@ static func _normalized_weights(value: Color) -> Color:
 	return value / total
 
 
+## The material is colour-only: the shader blends one palette colour per
+## semantic layer (ground, road, rock, snow) by the vertex weights the build
+## and paint passes write. No textures are bound.
 static func _make_material(data: Resource) -> ShaderMaterial:
 	var material := ShaderMaterial.new()
 	material.shader = TERRAIN_SHADER
 	var params: Dictionary = data.params
-	var mode := String(params.get("render_mode", "bundled"))
-	material.set_shader_parameter("material_mode", 0 if mode == "procedural" else 1)
-	material.set_shader_parameter("texture_scale", float(params.get("texture_scale", 0.2)))
-	# Keep the triplanar detail restrained so steep terrain gains texture relief
-	# without allowing normal maps to overpower the heightfield's true normals.
-	material.set_shader_parameter("normal_strength", 0.08)
 	var palette := _palette(String(params.get("material_preset", "natural")))
 	material.set_shader_parameter("ground_color", palette[1])
 	material.set_shader_parameter("road_color", palette[0].darkened(0.16))
 	material.set_shader_parameter("rock_color", palette[3])
 	material.set_shader_parameter("snow_color", palette[2])
-	if mode != "procedural":
-		var overrides: Dictionary = params.get("custom_textures", {})
-		for layer in BUNDLED_TEXTURES:
-			var layer_overrides: Dictionary = overrides.get(layer, {}) if mode == "custom" else {}
-			for texture_kind in BUNDLED_TEXTURES[layer]:
-				var fallback := _selected_texture_path(params, layer, texture_kind)
-				var texture_path := String(layer_overrides.get(texture_kind, fallback))
-				var texture := load(texture_path)
-				if texture is Texture2D:
-					material.set_shader_parameter("%s_%s" % [layer, texture_kind], texture)
 	return material
-
-
-static func _selected_texture_path(params: Dictionary, layer: String, texture_kind: String) -> String:
-	var profile := String(params.get("surface_profile", "mountain_valley"))
-	if profile == "legacy" or layer == "snow":
-		return TEXTURE_ROOT + String(BUNDLED_TEXTURES[layer][texture_kind])
-	var family := "dirt" if layer == "road" else layer
-	var defaults: Dictionary = PROFILE_VARIANTS.get(profile, PROFILE_VARIANTS.mountain_valley)
-	var selected: Dictionary = params.get("texture_variants", {})
-	var variant_index := clampi(int(selected.get(family, defaults.get(family, 0))), 0, 2)
-	var variant_name := String(GENERATED_VARIANTS[family][variant_index])
-	var file_name := "normal_opengl" if texture_kind == "normal" else texture_kind
-	return "%s%s/%s/%s.png" % [GENERATED_ROOT, family, variant_name, file_name]
